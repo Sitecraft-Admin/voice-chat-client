@@ -52,6 +52,12 @@ Output:
 
 ---
 
+## Compatibility
+
+Tested on **Ragnarok Online client 2024-08-22**.
+
+---
+
 ## License
 
 Developed by **TiTaNos** — [sitecraft.in.th](https://sitecraft.in.th/)
