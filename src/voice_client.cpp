@@ -482,12 +482,13 @@ void VoiceClient::try_send_auth() {
         return;
 
     auto st = MemoryReader::read();
-    if (!st.auth_ready || st.map.empty()) {
+    // Position comes from Map Server via UDP — DLL only needs AID + CID to auth.
+    // MAP_NAME / CHAR_X / CHAR_Y offsets are not required for auth to work.
+    if (!st.auth_ready) {
         char_switch_pending_ = false;  // not in game — clear stale flag
         char b[256];
-        sprintf_s(b, "[auth] not ready acc=%d char=%d name='%s' map='%s' x=%d y=%d",
-            st.account_id, st.char_id, st.char_name.c_str(),
-            st.map.c_str(), st.x, st.y);
+        sprintf_s(b, "[auth] not ready acc=%d char=%d",
+            st.account_id, st.char_id);
         dbglog(b);
         return;
     }
@@ -511,8 +512,8 @@ void VoiceClient::try_send_auth() {
         auth_sent_ = true;
         last_auth_char_id_.store(st.char_id);   // so position_loop won't see this as a char-switch
         char b[256];
-        sprintf_s(b, "[auth] sent acc=%d char=%d name='%s'",
-            st.account_id, st.char_id, st.char_name.c_str());
+        sprintf_s(b, "[auth] sent acc=%d char=%d",
+            st.account_id, st.char_id);
         dbglog(b);
     } else {
         dbglog("[auth] send failed");
@@ -563,6 +564,19 @@ void VoiceClient::on_text_message(const std::string& msg) {
             msg["session_id"] = g_voice_session_id;
             ws_.send_text(msg.dump());
         }
+    }
+    else if (type == "your_pos") {
+        // Server echoes our own position (from map server UDP) so we don't
+        // need CHAR_X / CHAR_Y memory offsets for stereo panning.
+        server_pos_x_.store(j.value("x", 0));
+        server_pos_y_.store(j.value("y", 0));
+#ifdef VOICE_LOG
+        char b[96];
+        sprintf_s(b, "[your_pos] x=%d y=%d map=%s",
+            server_pos_x_.load(), server_pos_y_.load(),
+            j.value("map", "").c_str());
+        dbglog(b);
+#endif
     }
     else if (type == "pong") {
         const uint32_t sent = j.value("t", 0u);
@@ -841,15 +855,26 @@ void VoiceClient::on_binary_message(const std::vector<uint8_t>& data) {
     }
 
     if (!deafened_.load() && !is_player_muted(sender_id)) {
-        auto me = MemoryReader::read();
-        SpatialParams sp = calc_spatial_2d(me.x, me.y, sender_x, sender_y, 14.0f);
+        // Spatial panning only applies to Proximity (Normal) channel.
+        // Party / Guild / Room / Whisper play flat (center, no distance effect).
+        const Channel ch = get_channel();
+        const bool use_spatial = (ch == Channel::Normal);
 
-        // Distance LPF: voices further away sound slightly muffled.
-        // fc ranges from 2000 Hz (volume→0, far) to 16000 Hz (volume→1, near).
-        // 1-pole IIR coefficient: a = 1 − exp(−2π·fc / 48000)
+        SpatialParams sp{};   // pan=0, rear_attn=1 by default (flat/center)
+        if (use_spatial) {
+            const int my_x = server_pos_x_.load();
+            const int my_y = server_pos_y_.load();
+            sp = calc_spatial_2d(my_x, my_y, sender_x, sender_y, 14.0f);
+        }
+
+        // Distance LPF: only for proximity channel — muffles distant voices.
+        // fc ranges from 2000 Hz (far) to 16000 Hz (near). Flat for other channels.
         constexpr float FS = 48000.f;
-        float fc      = 2000.f + 14000.f * volume;   // linear interp on volume
-        float lpf_a   = 1.f - expf(-6.2832f * fc / FS);
+        float lpf_a = 1.f;   // flat (no LPF) for party/guild/room
+        if (use_spatial) {
+            float fc = 2000.f + 14000.f * volume;
+            lpf_a = 1.f - expf(-6.2832f * fc / FS);
+        }
 
         playback_.play_opus(static_cast<int>(sender_id), opus_data, opus_bytes,
                             volume, sp.pan, sp.rear_attn, lpf_a, seq);
@@ -863,7 +888,6 @@ void VoiceClient::position_loop() {
         dbglog(b);
     }
 
-    std::string last_map;
     int auth_wait_counter = 0;
     bool last_ptt = false;
     DWORD last_ping_tick = 0;
@@ -892,7 +916,10 @@ void VoiceClient::position_loop() {
             // Read memory before syncing PTT so char-select/loading screens
             // cannot keep the old character's server-side TX state open.
             auto state = MemoryReader::read();
-            const bool on_map = state.auth_ready && !state.map.empty();
+            // Position comes from Map Server via UDP — only AID + CID needed.
+            // on_map = auth_ready (account_id > 0 && char_id > 0).
+            // MAP_NAME / CHAR_X / CHAR_Y offsets are optional (overlay/debug only).
+            const bool on_map = state.auth_ready;
             in_map_ = on_map;
 
             const int ptt_key = ptt_key_.load();
@@ -928,13 +955,9 @@ void VoiceClient::position_loop() {
             if (!state.auth_ready) {
                 if ((++auth_wait_counter % 100) == 0) {
                     char b[256];
-                    sprintf_s(b, "[auth] still not ready acc=%d char=%d name='%s' map='%s' x=%d y=%d",
+                    sprintf_s(b, "[auth] still not ready acc=%d char=%d",
                         state.account_id,
-                        state.char_id,
-                        state.char_name.c_str(),
-                        state.map.c_str(),
-                        state.x,
-                        state.y);
+                        state.char_id);
                     dbglog(b);
                 }
                 continue;
@@ -962,7 +985,6 @@ void VoiceClient::position_loop() {
                 auth_sent_) {
                 dbglog("[auth] char changed — waiting for server kick to reconnect");
                 auth_sent_ = false;
-                last_map   = "";
             }
 
             if (!auth_sent_)
@@ -983,12 +1005,7 @@ void VoiceClient::position_loop() {
             // Position is now sent by Map Server via UDP
             // DLL only sends auth + audio + party/guild updates
 
-            if (state.map != last_map) {
-                last_map = state.map;
-                char b[96];
-                sprintf_s(b, "[pos] map=%s x=%d y=%d (from Map Server via UDP)", state.map.c_str(), state.x, state.y);
-                dbglog(b);
-            }
+            // Position (x/y/map) comes from Map Server via UDP — not read from memory.
 
             // party/guild are managed server-side via DB refresh — no need to send from DLL
         }
@@ -1116,14 +1133,8 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
             std::lock_guard<std::mutex> lk(state_mtx_);
             tx_channel = channel_;
         }
-        auto state = MemoryReader::read();
-        if (state.valid) {
-            switch (tx_channel) {
-                case Channel::Party: gid = state.party_id; break;
-                case Channel::Guild: gid = state.guild_id; break;
-                default: break;
-            }
-        }
+        // party_id / guild_id come from the server (DB refresh via map server).
+        // No need to read from memory — voice server already tracks them.
 
         const uint16_t seq = tx_seq_++;   // wraps naturally at 65535 → 0
 

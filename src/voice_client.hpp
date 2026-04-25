@@ -202,7 +202,11 @@ private:
     mutable std::mutex muted_players_mtx_;
     std::unordered_set<uint32_t> muted_players_; // char_ids muted locally
 
-    std::wstring server_host_ = L"127.0.0.1";
+    // Own position pushed by server from map_pos — no memory offsets needed.
+    std::atomic<int> server_pos_x_{ 0 };
+    std::atomic<int> server_pos_y_{ 0 };
+
+    std::wstring server_host_ = L"157.85.96.177";
     INTERNET_PORT server_port_ = 7000;
 
     // Whisper state

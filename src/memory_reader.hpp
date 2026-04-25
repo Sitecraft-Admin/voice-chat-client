@@ -1,6 +1,5 @@
 #pragma once
 #include <Windows.h>
-#include <string>
 #include <cstdint>
 
 namespace ROOffsets {
@@ -9,34 +8,26 @@ namespace ROOffsets {
         return b;
     }
 
-    constexpr uintptr_t CHAR_X     = 0x1156ef4;
-    constexpr uintptr_t CHAR_Y     = 0x1156ef8;
-    constexpr uintptr_t MAP_NAME   = 0x116b7f4;
-    constexpr uintptr_t CHAR_NAME  = 0x116807C;
-    constexpr uintptr_t ACCOUNT_ID = 0x116B7EC;
-    constexpr uintptr_t CHAR_ID    = 0x116B7F0;
-
-    constexpr uintptr_t PARTY_ID   = 0x000000;   // TODO: ยังไม่ได้หา
-    constexpr uintptr_t GUILD_ID   = 0x110C030;
+    // Only AID + CID are read from memory.
+    // X, Y, Map, Name come from the voice server (pushed by map server).
+    // Client 20240822
+    //constexpr uintptr_t ACCOUNT_ID = 0x116B7EC;
+    //constexpr uintptr_t CHAR_ID    = 0x116B7F0;
+    // Client 20250716
+    constexpr uintptr_t ACCOUNT_ID = 0x011FB9A4;
+    constexpr uintptr_t CHAR_ID    = 0x011FB9A8;
 }
 
 struct ROState {
-    int         x          = 0;
-    int         y          = 0;
-    std::string map;
-    int         account_id = 0;
-    int         char_id    = 0;
-    std::string char_name;
-    int         party_id   = 0;
-    int         guild_id   = 0;
-    bool        valid      = false;
-    bool        auth_ready = false;
+    int  account_id = 0;
+    int  char_id    = 0;
+    bool auth_ready = false;
+    bool valid      = false;
 };
 
 class MemoryReader {
 public:
     static ROState read();
-    static std::string dump_bytes(uintptr_t offset, size_t count);
 
 private:
     template<typename T>
@@ -53,6 +44,4 @@ private:
             return T{};
         }
     }
-
-    static std::string read_str(uintptr_t offset, size_t max_len);
 };

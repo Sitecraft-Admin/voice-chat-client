@@ -161,12 +161,18 @@ __forceinline bool chk_blacklist() {
 // ── Combined check ────────────────────────────────────────────────────────
 // Returns true if any sign of debugging / analysis is detected.
 inline bool is_being_analyzed() {
+#ifdef _DEBUG
+    // Debug builds always trigger heap-flag and NtGlobalFlag checks because
+    // MSVC Debug CRT sets those flags itself — skip all checks in debug.
+    return false;
+#else
     return chk_peb_flag()
         || chk_remote_dbg()
         || chk_debug_port()
         || chk_heap_flags()
         || chk_nt_global_flag()
         || chk_blacklist();
+#endif
 }
 
 // ── Tamper state ──────────────────────────────────────────────────────────
