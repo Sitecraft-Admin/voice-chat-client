@@ -1,6 +1,7 @@
 .vs/
 build/
 dist/
+src/extras/
 *.ilk
 *.lib
 !vendor/opus/lib/**/*.lib
@@ -11,3 +12,7 @@ dist/
 *.VC.db
 *.VC.opendb
 *.log
+build.ps1
+deploy-to-ros.ps1
+release.bat
+README_PATCH_BUNDLE.txt
