@@ -1,0 +1,4 @@
+#include "src/resource.h"
+
+IDR_UI_BACKGROUND RCDATA "assets\\ui\\Background.png"
+IDR_UI_BUTTON     RCDATA "assets\\ui\\btn.png"

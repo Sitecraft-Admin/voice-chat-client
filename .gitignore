@@ -1,0 +1,13 @@
+.vs/
+build/
+dist/
+*.ilk
+*.lib
+!vendor/opus/lib/**/*.lib
+*.pdb
+*.obj
+*.tlog
+*.user
+*.VC.db
+*.VC.opendb
+*.log
