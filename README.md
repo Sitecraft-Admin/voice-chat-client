@@ -24,7 +24,6 @@ Built for use with [rathena-voice-chat](https://github.com/Sitecraft-Admin/rathe
 ## Layout
 
 - `src/` — main DLL source and headers
-- `src/extras/` — extra files (not part of build)
 - `vendor/` — third-party dependencies (ImGui, Opus, nlohmann/json)
 - `dist/` — build output
 
