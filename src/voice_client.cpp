@@ -1158,7 +1158,7 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
         // their own end — but no audio is transmitted to the server.
         // This is intentionally harder to spot than an explicit crash or error.
         if (anti_tamper::is_tampered()) {
-            pcm_accum_.erase(pcm_accum_.begin(), pcm_accum_.begin() + FRAME);
+            // pcm_accum_ was already erased above (line 1138) — do NOT erase again.
             continue;
         }
 
