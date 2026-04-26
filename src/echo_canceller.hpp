@@ -164,7 +164,10 @@ public:
     }
 
     float erle_db() const {
-        float e = erle_ewma_;
+        // erle_ewma_ is written by process() under mtx_; take a snapshot under
+        // the lock so we don't read a torn float on the overlay/UI thread.
+        std::lock_guard<std::mutex> lk(mtx_);
+        const float e = erle_ewma_;
         if (e <= 1.0f) return 0.0f;
         return 10.0f * std::log10(e);
     }
@@ -194,7 +197,7 @@ private:
 
     // ── State ─────────────────────────────────────────────────────────────
     std::atomic<bool>   enabled_{ false };
-    std::mutex          mtx_;
+    mutable std::mutex  mtx_;
     std::vector<float>  h_;           // adaptive filter coefficients
     std::vector<float>  ref_ring_;    // far-end reference ring buffer
     std::vector<float>  x_buf_;       // tap window — pre-allocated, reused each frame
