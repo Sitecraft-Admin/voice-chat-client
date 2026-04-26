@@ -1546,7 +1546,11 @@ void draw_voice_window() {
     } else {
         for (int i = 0; i < 4; i++) {
             bool sel = (ch == tabs[i].ch);
-            const bool blocked = war_mode && (tabs[i].ch == Channel::Normal || tabs[i].ch == Channel::Room);
+            // Room is assigned by the map server (chat_join/chat_leave) — the player
+            // cannot manually enter a room.  Disable the button unless already in one.
+            const bool room_unavail = (tabs[i].ch == Channel::Room) && (ch != Channel::Room);
+            const bool blocked = room_unavail
+                              || (war_mode && (tabs[i].ch == Channel::Normal || tabs[i].ch == Channel::Room));
             ImGui::PushStyleColor(ImGuiCol_Button,
                 sel ? ImVec4(0.18f, 0.50f, 0.18f, 1.f)
                     : blocked ? ImVec4(0.18f, 0.18f, 0.18f, 0.55f)
@@ -1561,6 +1565,8 @@ void draw_voice_window() {
                               : ImVec4(0.72f, 0.72f, 0.72f, 1.f));
             if (ImGui::Button(tabs[i].label, ImVec2(0.f, 18.f)) && !blocked)
                 vc.set_channel(tabs[i].ch);
+            if (room_unavail && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Auto-assigned when in a chat room");
             ImGui::PopStyleColor(3);
             if (i < 3) ImGui::SameLine(0, 4.f);
         }

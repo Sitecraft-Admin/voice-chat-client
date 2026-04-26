@@ -1246,6 +1246,12 @@ void VoiceClient::set_deafen(bool v) {
 }
 
 void VoiceClient::set_channel(Channel ch) {
+    // Room is server-controlled (assigned via map server chat_join/chat_leave).
+    // Reject manual Room switches — caller must wait for room_joined event.
+    if (ch == Channel::Room) {
+        dbglog("[chan] ignoring manual set_channel(Room) — server-controlled");
+        return;
+    }
     if (war_mode_.load() && (ch == Channel::Normal || ch == Channel::Room)) {
         set_whisper_notice("War Mode");
         return;
