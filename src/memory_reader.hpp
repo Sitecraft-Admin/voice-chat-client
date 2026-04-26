@@ -1,6 +1,8 @@
 #pragma once
 #include <Windows.h>
 #include <cstdint>
+#include <atomic>
+#include <unordered_map>
 
 namespace ROOffsets {
     inline uintptr_t base() {
@@ -10,12 +12,25 @@ namespace ROOffsets {
 
     // Only AID + CID are read from memory.
     // X, Y, Map, Name come from the voice server (pushed by map server).
-    // Client 20240822
-    //constexpr uintptr_t ACCOUNT_ID = 0x116B7EC;
-    //constexpr uintptr_t CHAR_ID    = 0x116B7F0;
-    // Client 20250716
-    constexpr uintptr_t ACCOUNT_ID = 0x011FB9A4;
-    constexpr uintptr_t CHAR_ID    = 0x011FB9A8;
+    struct Offsets { uintptr_t account_id; uintptr_t char_id; };
+
+    inline const std::unordered_map<uint32_t, Offsets>& table() {
+        static const std::unordered_map<uint32_t, Offsets> t = {
+            { 20240822u, { 0x116B7ECu, 0x116B7F0u } },
+            { 20250716u, { 0x011FB9A4u, 0x011FB9A8u } },
+        };
+        return t;
+    }
+
+    inline std::atomic<uint32_t>& client_ver() {
+        static std::atomic<uint32_t> ver{0u};
+        return ver;
+    }
+
+    inline const Offsets* get() {
+        auto it = table().find(client_ver().load());
+        return it != table().end() ? &it->second : nullptr;
+    }
 }
 
 struct ROState {

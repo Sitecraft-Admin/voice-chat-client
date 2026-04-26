@@ -539,7 +539,17 @@ void VoiceClient::on_text_message(const std::string& msg) {
 
     std::string type = j.value("type", "");
 
-    if (type == "auth_ok") {
+    if (type == "server_config") {
+        uint32_t pv = j.value("packetver", 0u);
+        if (pv) {
+            ROOffsets::client_ver().store(pv);
+            char b[64];
+            sprintf_s(b, "[cfg] packetver=%u", pv);
+            dbglog(b);
+        }
+        return;
+    }
+    else if (type == "auth_ok") {
         dbglog("[auth] auth_ok");
         // Sync current client-side TX/RX state to server after auth.
         // Why: position_loop may have sent ptt before auth completed, and the
