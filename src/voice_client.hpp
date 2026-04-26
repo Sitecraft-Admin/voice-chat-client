@@ -96,7 +96,8 @@ public:
     void set_ptt(bool active);
     void set_mute(bool muted);
     void set_channel(Channel ch);
-    void join_room(const std::string& room_id);
+    // join_room() removed — rooms are managed by map server (UDP chat_join/chat_leave).
+    // The DLL receives room_joined/room_left WS events and switches channel accordingly.
 
     // ── Whisper ───────────────────────────────────────────────────────────────
     enum class WhisperState { None, Calling, Incoming, Active };
@@ -188,7 +189,6 @@ private:
     std::atomic<uint32_t> channel_switch_ack_ms_{ 0 };
     float mic_hpf_x1_ = 0.0f;
     float mic_hpf_y1_ = 0.0f;
-    std::string room_id_;
 
     std::mutex speakers_mtx_;
     std::vector<std::string> speakers_;

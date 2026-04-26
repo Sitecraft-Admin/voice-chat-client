@@ -1281,15 +1281,9 @@ void VoiceClient::set_channel(Channel ch) {
     }
 }
 
-void VoiceClient::join_room(const std::string& room_id) {
-    room_id_ = room_id;
-    if (!ws_.is_connected()) return;
-
-    json msg;
-    msg["type"]    = "join_room";
-    msg["room_id"] = room_id;
-    enqueue_ws_send(msg.dump());
-}
+// join_room() removed — room membership is managed by the map server via UDP
+// (chat_join / chat_leave).  The voice server updates chat_room_id and sends
+// room_joined / room_left WS events to the DLL; the DLL does not initiate joins.
 
 std::vector<std::string> VoiceClient::get_speakers() {
     std::lock_guard lock(speakers_mtx_);
