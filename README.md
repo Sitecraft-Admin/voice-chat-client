@@ -42,6 +42,27 @@ Change `127.0.0.1` to your voice server IP before building.
 
 ---
 
+## Memory Offsets
+
+Only **ACCOUNT_ID** and **CHAR_ID** are read from client memory.
+Position (X/Y/Map) is pushed by the map server via the voice server — no memory scanning needed for spatial audio.
+
+Edit `src/memory_reader.hpp` to match your client version:
+
+```cpp
+// Client 2024-08-22
+//constexpr uintptr_t ACCOUNT_ID = 0x116B7EC;
+//constexpr uintptr_t CHAR_ID    = 0x116B7F0;
+
+// Client 2025-07-16
+constexpr uintptr_t ACCOUNT_ID = 0x011FB9A4;
+constexpr uintptr_t CHAR_ID    = 0x011FB9A8;
+```
+
+Use `ro-mem-scanner` tool to find offsets for other client versions.
+
+---
+
 ## Build
 
 Open `voice-dll.sln` in Visual Studio 2022 and build `Release | Win32`.
