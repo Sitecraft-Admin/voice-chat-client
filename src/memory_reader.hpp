@@ -16,14 +16,18 @@ namespace ROOffsets {
 
     inline const std::unordered_map<uint32_t, Offsets>& table() {
         static const std::unordered_map<uint32_t, Offsets> t = {
-            { 20240822u, { 0x116B7ECu, 0x116B7F0u } },
-            { 20250716u, { 0x011FB9A4u, 0x011FB9A8u } },
+            { 20240822, { 0x116B7EC, 0x116B7F0 } },
+            { 20250716, { 0x011FB9A4, 0x011FB9A8 } },
         };
         return t;
     }
 
+    // Default = latest known client. Updated at runtime when the voice server
+    // sends {type:"server_config", packetver:YYYYMMDD}. Using the newest
+    // version as fallback means the DLL works immediately on connect even
+    // before server_config arrives, and silently corrects itself afterwards.
     inline std::atomic<uint32_t>& client_ver() {
-        static std::atomic<uint32_t> ver{0u};
+        static std::atomic<uint32_t> ver{20250716u};
         return ver;
     }
 
