@@ -7,14 +7,8 @@ ROState MemoryReader::read() {
     ROState st{};
 
     __try {
-        const auto* off = ROOffsets::get();
-        if (!off) {
-            dbglog("[mem] unknown client_ver — cannot read AID/CID");
-            return st;
-        }
-
-        auto* ptr_aid = reinterpret_cast<int*>(ROOffsets::base() + off->account_id);
-        auto* ptr_cid = reinterpret_cast<int*>(ROOffsets::base() + off->char_id);
+        auto* ptr_aid = reinterpret_cast<int*>(ROOffsets::base() + ROOffsets::ACCOUNT_ID);
+        auto* ptr_cid = reinterpret_cast<int*>(ROOffsets::base() + ROOffsets::CHAR_ID);
 
         MEMORY_BASIC_INFORMATION mbi{};
         if (VirtualQuery(ptr_aid, &mbi, sizeof(mbi)) &&
