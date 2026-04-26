@@ -173,10 +173,15 @@ void VoiceClient::save_settings(const char* path) {
         channel = channel_;
     }
 
+    // When deafened, deafen forces muted_=true.  Save the *pre-deafen* mute
+    // state so that after reload + un-deafen the mic is correctly unmuted.
+    const bool save_muted = deafened_.load() ? muted_before_deafen_.load()
+                                             : muted_.load();
+
     f << "// Voice Client Settings — auto-saved\n"
       << "ptt_key: "        << ptt_key_.load()                       << "\n"
       << "open_mic: "       << (open_mic_.load() ? 1 : 0)           << "\n"
-      << "muted: "          << (muted_.load()    ? 1 : 0)           << "\n"
+      << "muted: "          << (save_muted        ? 1 : 0)           << "\n"
       << "deafened: "       << (deafened_.load() ? 1 : 0)           << "\n"
       << "channel: "        << static_cast<int>(channel)            << "\n"
       << "mic_gain: "       << capture_.gain.load()                 << "\n"
