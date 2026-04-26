@@ -170,7 +170,15 @@ void VoiceClient::save_settings(const char* path) {
     Channel channel = Channel::Normal;
     {
         std::lock_guard<std::mutex> lk(state_mtx_);
-        channel = channel_;
+        // Room and Whisper are transient session states — saving them causes
+        // the player to reload into a broken channel (no room/peer exists).
+        // Persist the pre-transient channel so the next session starts clean.
+        if (channel_ == Channel::Room)
+            channel = pre_room_channel_;
+        else if (channel_ == Channel::Whisper)
+            channel = pre_whisper_channel_;
+        else
+            channel = channel_;
     }
 
     // When deafened, deafen forces muted_=true.  Save the *pre-deafen* mute
@@ -1259,13 +1267,17 @@ void VoiceClient::set_channel(Channel ch) {
         pending_channel_tick_.store(GetTickCount());
         channel_switch_ack_ms_.store(0);
     }
-    // Notify server via the outgoing queue so the D3D9 render thread never
-    // blocks on WinHTTP I/O (which could freeze the game for up to 3 s).
+    // set_channel is a critical control message: the server's rx_channel check
+    // (should_forward ch<=2) blocks audio until it arrives.  Send directly
+    // instead of via the 33ms queue so the server updates rx_channel before
+    // the first audio packet on the new channel is transmitted.
+    // ws_.send_text() is protected by send_mtx_ so it is safe to call from
+    // the D3D9 render thread.
     if (ws_.is_connected() && auth_sent_) {
         json msg;
         msg["type"]    = "set_channel";
         msg["channel"] = static_cast<int>(ch);
-        enqueue_ws_send(msg.dump());
+        ws_.send_text(msg.dump());
     }
 }
 
