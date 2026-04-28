@@ -1051,23 +1051,24 @@ void draw_settings_window() {
         const auto& active = g_player_cache.active;
         const auto& all_ids = g_player_cache.all_ids;
 
+        const float ptt_h = g_btn_ptt_key_tex.tex ? (float)g_btn_ptt_key_tex.height : 24.f;
+        const float ex_w  = g_btn_exit_tex.tex    ? (float)g_btn_exit_tex.width     : 42.f;
+        const float ex_h  = g_btn_exit_tex.tex    ? (float)g_btn_exit_tex.height    : 24.f;
+
         if (!all_ids.empty()) {
             bool any_unmuted = false;
             for (uint32_t id : all_ids) {
-                if (!vc.is_player_muted(id)) {
-                    any_unmuted = true;
-                    break;
-                }
+                if (!vc.is_player_muted(id)) { any_unmuted = true; break; }
             }
-            ImGui::PushStyleColor(ImGuiCol_Button, any_unmuted ? ImVec4(0.60f, 0.15f, 0.15f, 1.f) : ImVec4(0.20f, 0.45f, 0.20f, 1.f));
-            if (ImGui::Button(any_unmuted ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Mute All")
-                                          : L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Unmute All"), ImVec2(avw, 22.f))) {
+            const char* mute_all_lbl = any_unmuted
+                ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Mute All")
+                : L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Unmute All");
+            if (ptt_key_button("##btn_mute_all", mute_all_lbl, ImVec2(avw, ptt_h), !any_unmuted)) {
                 for (uint32_t id : all_ids) {
                     if (any_unmuted) vc.mute_player(id); else vc.unmute_player(id);
                 }
                 g_player_cache.last_refresh = -1.0;
             }
-            ImGui::PopStyleColor();
             ImGui::Spacing();
         }
 
@@ -1082,18 +1083,16 @@ void draw_settings_window() {
 
                 bool speaking = false;
                 for (uint32_t a : active) if (a == id) { speaking = true; break; }
-                ImGui::TextColored(speaking && !is_muted ? ImVec4(0.3f, 1.f, 0.3f, 1.f) : (is_muted ? sub : ImVec4(0.2f, 0.2f, 0.22f, 1.f)), "%s%s", is_muted ? "x " : (speaking ? "* " : "  "), name.c_str());
+                ImGui::TextColored(is_muted ? ImVec4(0.85f, 0.15f, 0.15f, 1.f) : (speaking ? ImVec4(0.3f, 1.f, 0.3f, 1.f) : ImVec4(0.f, 0.f, 0.f, 1.f)), "%s%s", is_muted ? "x " : (speaking ? "* " : "  "), name.c_str());
 
-                ImGui::SameLine((std::max)(120.0f, avw - 94.f));
-                char w_id[32]; sprintf_s(w_id, "W##w%u", id);
-                ImGui::PushStyleColor(ImGuiCol_Button, can_wsp ? ImVec4(0.40f, 0.14f, 0.65f, 1.f) : ImVec4(0.22f, 0.08f, 0.32f, 0.55f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, can_wsp ? ImVec4(0.55f, 0.22f, 0.80f, 1.f) : ImVec4(0.22f, 0.08f, 0.32f, 0.55f));
-                if (ImGui::Button(w_id, ImVec2(24.f, 20.f)) && can_wsp) vc.whisper_request(id);
-                ImGui::PopStyleColor(2);
+                ImGui::SameLine((std::max)(120.0f, avw - ex_w * 2.f - 4.f));
+                char w_id[32]; sprintf_s(w_id, "##w%u", id);
+                if (exit_button(w_id, L("\xe0\xb9\x82\xe0\xb8\x97\xe0\xb8\xa3", "Call"), ImVec2(ex_w, ex_h), false) && can_wsp) vc.whisper_request(id);
                 ImGui::SameLine(0, 4.f);
 
-                char btn_id[48]; sprintf_s(btn_id, "%s##m%u", is_muted ? L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Unmute") : L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Mute"), id);
-                if (ImGui::Button(btn_id, ImVec2(62.f, 20.f))) {
+                char m_id[32]; sprintf_s(m_id, "##m%u", id);
+                const char* m_lbl = is_muted ? L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Unmute") : L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Mute");
+                if (exit_button(m_id, m_lbl, ImVec2(ex_w, ex_h), is_muted)) {
                     if (is_muted) vc.unmute_player(id); else vc.mute_player(id);
                     g_player_cache.last_refresh = -1.0;
                 }
