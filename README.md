@@ -68,10 +68,25 @@ Use [`tools/ro-mem-scanner.zip`](tools/ro-mem-scanner.zip) to find offsets for o
 
 ## Injection
 
-Inject `voice-chat.dll` into the RO client process using any DLL injector.
+Recommended: use [`tools/VoiceLinker.zip`](tools/VoiceLinker.zip) to patch the RO client EXE so it loads
+`voice-chat.dll` automatically on startup.
+
+**Using VoiceLinker:**
+- Extract `VoiceLinker.zip`
+- Open `VoiceLinker.exe`
+- Select your RO client `.exe`
+- Click **Inject**
+- Put `voice-chat.dll` next to the patched RO client `.exe`
+- Start the RO client normally
+
+VoiceLinker creates a `.bak` backup next to the target EXE. To undo the patch, open VoiceLinker again,
+select the same EXE, and click **Remove**.
+
+Alternative: inject `voice-chat.dll` into the RO client process using any DLL injector.
 
 **Important:**
 - Inject **after** you are logged into a character on a map (not at the login or character select screen)
+- If you use VoiceLinker, place `voice-chat.dll` next to the RO client EXE before launching the game
 - The overlay appears automatically once the DLL is loaded and connected
 - Press **Scroll Lock** to show/hide the overlay at any time
 
