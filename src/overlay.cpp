@@ -1769,7 +1769,7 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
     g_whisper_popup = in_game &&
         (vc.get_whisper_state() == VoiceClient::WhisperState::Incoming);
 
-    if (g_visible && on_map && g_badge_visible) draw_voice_window();
+    if (g_visible && in_game && g_badge_visible) draw_voice_window();
     if (g_settings_open && in_game) draw_settings_window();
     if (g_whisper_popup)             draw_whisper_popup();
     if (g_call_popup && in_game)     draw_call_popup();

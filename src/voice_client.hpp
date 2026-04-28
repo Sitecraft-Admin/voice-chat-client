@@ -35,8 +35,9 @@ public:
     void init();
     void shutdown();
 
-    bool        is_connected()  const { return ws_.is_connected(); }
-    bool        is_in_game()    const { return auth_sent_ && in_map_; }  // true = authed & on a map
+    bool        is_connected()    const { return ws_.is_connected(); }
+    bool        is_auth_confirmed() const { return auth_confirmed_.load(); } // server sent auth_ok
+    bool        is_in_game()    const { return auth_confirmed_ && in_map_; }  // true = authed & on a map
     bool        is_on_map()     const { return in_map_.load(); }
     bool        is_muted()      const { return muted_.load(); }
     bool        is_ptt_active() const { return ptt_active_.load(); }
@@ -136,6 +137,7 @@ private:
     std::atomic<bool> running_{ false };
     std::atomic<bool> reconnecting_{ false };
     std::atomic<bool> auth_sent_{ false };
+    std::atomic<bool> auth_confirmed_{ false }; // set only on auth_ok from server
     std::atomic<bool> in_map_{ false };     // true only when on a map (hides overlay on char select)
     void position_loop();
 

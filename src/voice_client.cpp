@@ -354,7 +354,8 @@ void VoiceClient::init() {
     load_settings();   // restore PTT key, gains, devices, channel etc.
 
     running_ = true;
-    auth_sent_ = false;
+    auth_sent_      = false;
+    auth_confirmed_ = false;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
     reconnecting_ = false;
     init_opus_encoder();
@@ -388,9 +389,10 @@ void VoiceClient::init() {
 }
 
 void VoiceClient::shutdown() {
-    running_ = false;
-    reconnecting_ = false;
-    auth_sent_ = false;
+    running_        = false;
+    reconnecting_   = false;
+    auth_sent_      = false;
+    auth_confirmed_ = false;
     reset_mic_pipeline_.store(true);
     pcm_accum_.clear();
     reset_mic_filter_state();
@@ -405,7 +407,8 @@ void VoiceClient::shutdown() {
 }
 
 void VoiceClient::on_ws_closed() {
-    auth_sent_ = false;
+    auth_sent_      = false;
+    auth_confirmed_ = false;
     // NOTE: do NOT touch pcm_accum_ here — this function now runs on both
     // the WS recv thread (server-drop path) AND the position thread (char
     // switch path), while pcm_accum_ is mutated by the audio capture thread.
@@ -492,7 +495,8 @@ void VoiceClient::connect_to_server() {
     dbglog(ok ? "ws_.connect OK" : "ws_.connect FAILED (voice-server not running?)");
     if (!ok) return;
 
-    auth_sent_ = false;
+    auth_sent_      = false;
+    auth_confirmed_ = false;
     try_send_auth();
 }
 
@@ -547,6 +551,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
     std::string type = j.value("type", "");
 
     if (type == "auth_ok") {
+        auth_confirmed_.store(true);
         dbglog("[auth] auth_ok");
         // Sync current client-side TX/RX state to server after auth.
         // Why: position_loop may have sent ptt before auth completed, and the
@@ -1015,7 +1020,8 @@ void VoiceClient::position_loop() {
                 state.char_id != last_auth_char_id &&
                 auth_sent_) {
                 dbglog("[auth] char changed — waiting for server kick to reconnect");
-                auth_sent_ = false;
+                auth_sent_      = false;
+                auth_confirmed_ = false;
             }
 
             if (!auth_sent_)
