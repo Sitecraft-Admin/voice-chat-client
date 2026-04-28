@@ -715,12 +715,10 @@ struct PlayerListCache {
         active = vc.get_active_speakers();
         muted  = vc.get_muted_players();
 
-        all_ids = active;
-        for (uint32_t id : muted) {
-            bool found = false;
-            for (uint32_t a : active) if (a == id) { found = true; break; }
-            if (!found) all_ids.push_back(id);
-        }
+        // Authoritative source: server sends only players within 14 cells.
+        // Do NOT merge active/muted back in — a player who walked out of range
+        // must not reappear just because they spoke recently or are locally muted.
+        all_ids = vc.get_nearby_players();
     }
 };
 static PlayerListCache g_player_cache;

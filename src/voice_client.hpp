@@ -84,6 +84,9 @@ public:
     // Returns char_ids that sent audio within the last 800 ms
     std::vector<uint32_t> get_active_speakers();
 
+    // Returns all char_ids the server reported as nearby (within proximity range)
+    std::vector<uint32_t> get_nearby_players();
+
     // Returns cached name for char_id, or empty string if unknown
     std::string get_speaker_name(uint32_t char_id);
 
@@ -198,6 +201,9 @@ private:
 
     std::mutex name_cache_mtx_;
     std::unordered_map<uint32_t, std::string> name_cache_; // char_id → name
+
+    std::mutex nearby_mtx_;
+    std::unordered_map<uint32_t, std::string> nearby_players_; // char_id → name (server-reported)
 
     mutable std::mutex muted_players_mtx_;
     std::unordered_set<uint32_t> muted_players_; // char_ids muted locally

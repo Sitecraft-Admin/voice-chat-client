@@ -433,6 +433,10 @@ void VoiceClient::on_ws_closed() {
         whisper_peer_id_ = 0;
         whisper_tick_ = 0;
     }
+    {
+        std::lock_guard<std::mutex> lk(nearby_mtx_);
+        nearby_players_.clear();
+    }
     if (restored_room_channel) {
         dbglog("[ws] disconnected while in Room — restored pre-room channel");
     }
@@ -672,6 +676,17 @@ void VoiceClient::on_text_message(const std::string& msg) {
             dbglog("[war] active");
         } else {
             dbglog("[war] inactive");
+        }
+    }
+    else if (type == "nearby_players") {
+        std::lock_guard<std::mutex> lk(nearby_mtx_);
+        nearby_players_.clear();
+        if (j.contains("players") && j["players"].is_array()) {
+            for (const auto& p : j["players"]) {
+                uint32_t id = p.value("id", 0u);
+                std::string name = p.value("name", "");
+                if (id > 0) nearby_players_[id] = name;
+            }
         }
     }
     else if (type == "error") {
@@ -1299,7 +1314,21 @@ std::vector<std::string> VoiceClient::get_speakers() {
     return speakers_;
 }
 
+std::vector<uint32_t> VoiceClient::get_nearby_players() {
+    std::lock_guard<std::mutex> lk(nearby_mtx_);
+    std::vector<uint32_t> out;
+    out.reserve(nearby_players_.size());
+    for (const auto& kv : nearby_players_) out.push_back(kv.first);
+    return out;
+}
+
 std::string VoiceClient::get_speaker_name(uint32_t char_id) {
+    // Check nearby_players_ first (most up-to-date name from server), fall back to name_cache_
+    {
+        std::lock_guard<std::mutex> lk(nearby_mtx_);
+        auto it = nearby_players_.find(char_id);
+        if (it != nearby_players_.end()) return it->second;
+    }
     std::lock_guard<std::mutex> lk(name_cache_mtx_);
     auto it = name_cache_.find(char_id);
     return (it != name_cache_.end()) ? it->second : std::string{};
