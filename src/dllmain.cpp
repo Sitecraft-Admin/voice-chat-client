@@ -6,6 +6,8 @@
 #include <Windows.h>
 #include <cstdio>
 
+extern "C" __declspec(dllexport) void VoiceAttach() {}
+
 static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     if (code == 0x406D1388) return EXCEPTION_CONTINUE_SEARCH;
