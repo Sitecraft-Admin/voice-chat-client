@@ -24,6 +24,7 @@
 #include "ui_close_btn_blob.hpp"
 #include "ui_btn_blob.hpp"
 #include "ui_call_btn_blobs.hpp"
+#include "ui_whisper_call_blobs.hpp"
 #include "ui_dropdown_btn_blobs.hpp"
 #include "ui_settings_btn_blobs.hpp"
 #include "ui_slider_blobs.hpp"
@@ -86,6 +87,9 @@ static UiTexture g_btn_ptt_key_tex;
 static UiTexture g_btn_ptt_key_hover_tex;
 static UiTexture g_btn_call_tex;
 static UiTexture g_btn_call_hover_tex;
+static UiTexture g_whisper_call_bg_tex;
+static UiTexture g_btn_whisper_call_tex;
+static UiTexture g_btn_whisper_call_hover_tex;
 static UiTexture g_btn_dropdown_tex;
 static UiTexture g_close_tex;
 static UiTexture g_mic_off_tex;
@@ -363,6 +367,9 @@ static void ensure_ui_assets(LPDIRECT3DDEVICE9 device) {
     if (!g_btn_ptt_key_hover_tex.tex) load_png_texture_from_memory(device, kBtnPttKeyHoverPng, kBtnPttKeyHoverPngSize, g_btn_ptt_key_hover_tex, g_btn_status, sizeof(g_btn_status));
     if (!g_btn_call_tex.tex) load_png_texture_from_memory(device, kBtnCallPng, kBtnCallPngSize, g_btn_call_tex, g_btn_status, sizeof(g_btn_status));
     if (!g_btn_call_hover_tex.tex) load_png_texture_from_memory(device, kBtnCallHoverPng, kBtnCallHoverPngSize, g_btn_call_hover_tex, g_btn_status, sizeof(g_btn_status));
+    if (!g_whisper_call_bg_tex.tex) load_png_texture_from_memory(device, kUiBackgroundCallWPng, kUiBackgroundCallWPngSize, g_whisper_call_bg_tex, g_bg_status, sizeof(g_bg_status));
+    if (!g_btn_whisper_call_tex.tex) load_png_texture_from_memory(device, kBtnCallWPng, kBtnCallWPngSize, g_btn_whisper_call_tex, g_btn_status, sizeof(g_btn_status));
+    if (!g_btn_whisper_call_hover_tex.tex) load_png_texture_from_memory(device, kBtnCallWHoverPng, kBtnCallWHoverPngSize, g_btn_whisper_call_hover_tex, g_btn_status, sizeof(g_btn_status));
     if (!g_btn_dropdown_tex.tex) load_png_texture_from_memory(device, kBtnDropdownPng, kBtnDropdownPngSize, g_btn_dropdown_tex, g_btn_status, sizeof(g_btn_status));
     if (!g_close_tex.tex) {
         load_png_texture_from_memory(device, kBtnClose1Png, kBtnClose1PngSize, g_close_tex, g_btn_status, sizeof(g_btn_status));
@@ -427,6 +434,10 @@ static bool ptt_key_button(const char* id, const char* label, ImVec2 size, bool 
 
 static bool call_button(const char* id, const char* label, ImVec2 size, bool active = false) {
     return textured_label_button(id, label, size, &g_btn_call_tex, &g_btn_call_hover_tex, active, -1.f, IM_COL32(18, 18, 18, 255));
+}
+
+static bool whisper_call_button(const char* id, const char* label, ImVec2 size) {
+    return textured_label_button(id, label, size, &g_btn_whisper_call_tex, &g_btn_whisper_call_hover_tex, false, -1.f, IM_COL32(22, 22, 22, 255));
 }
 
 static bool begin_device_combo(const char* id, const char* preview, float width) {
@@ -1308,67 +1319,84 @@ void draw_call_popup() {
 //
 void draw_whisper_popup() {
     auto& vc = VoiceClient::get();
+    ensure_ui_assets(g_ui_device);
 
     ImGuiIO& io = ImGui::GetIO();
+    const float win_w = g_whisper_call_bg_tex.tex ? (float)g_whisper_call_bg_tex.width : 136.f;
+    const float win_h = g_whisper_call_bg_tex.tex ? (float)g_whisper_call_bg_tex.height : 80.f;
     ImGui::SetNextWindowPos(
         ImVec2(io.DisplaySize.x - 10.f, io.DisplaySize.y - 80.f),
         ImGuiCond_Always, ImVec2(1.f, 1.f));
-    ImGui::SetNextWindowBgAlpha(0.88f);
+    ImGui::SetNextWindowSize(ImVec2(win_w, win_h), ImGuiCond_Always);
 
     constexpr ImGuiWindowFlags kPFlags =
         ImGuiWindowFlags_NoDecoration     |
         ImGuiWindowFlags_NoMove           |
-        ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoResize         |
+        ImGuiWindowFlags_NoScrollbar      |
         ImGuiWindowFlags_NoSavedSettings  |
         ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoNav;
+        ImGuiWindowFlags_NoNav             |
+        ImGuiWindowFlags_NoBackground;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,  ImVec2(6.f, 5.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,    ImVec2(4.f, 3.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,   ImVec2(6.f, 2.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,  3.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.f);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.08f, 0.20f, 0.92f));
-    ImGui::PushStyleColor(ImGuiCol_Border,   ImVec4(0.60f, 0.28f, 0.88f, 1.00f));
-
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.f, 0.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.f, 0.f));
     ImGui::Begin("##wsp_popup", nullptr, kPFlags);
-    ImGui::PopStyleColor(2);
+
+    ImVec2 win_pos = ImGui::GetWindowPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 bg_p1(win_pos.x + win_w, win_pos.y + win_h);
+    if (g_whisper_call_bg_tex.tex) {
+        dl->AddCallback(set_point_sampler_callback, nullptr);
+        dl->PushClipRect(win_pos, bg_p1, false);
+        dl->AddImage((ImTextureID)g_whisper_call_bg_tex.tex,
+                     win_pos,
+                     bg_p1,
+                     ImVec2(0.f, 0.f),
+                     ImVec2(g_whisper_call_bg_tex.u1, g_whisper_call_bg_tex.v1),
+                     IM_COL32_WHITE);
+        dl->PopClipRect();
+        dl->AddCallback(set_linear_sampler_callback, nullptr);
+    } else {
+        dl->AddRectFilled(win_pos, bg_p1, IM_COL32(245, 245, 245, 245), 3.f);
+        dl->AddRect(win_pos, bg_p1, IM_COL32(116, 137, 178, 255), 3.f);
+    }
 
     float t = (float)ImGui::GetTime();
 
-//
     float pulse = 0.70f + 0.30f * sinf(t * 5.f);
-    ImGui::TextColored(ImVec4(0.82f, 0.40f, 1.00f, pulse), "*");
-    ImGui::SameLine(0, 4.f);
     std::string peer = vc.get_whisper_peer();
     if (peer.empty()) peer = "???";
-    ImGui::TextColored(ImVec4(0.95f, 0.95f, 0.95f, 1.f), "%s", peer.c_str());
-    ImGui::SameLine(0, 6.f);
     DWORD elapsed = GetTickCount() - vc.get_whisper_tick();
     int remain = 30 - (int)(elapsed / 1000u);
     if (remain < 0) remain = 0;
     char cd[12]; sprintf_s(cd, "(%ds)", remain);
-    ImGui::TextColored(ImVec4(0.50f, 0.50f, 0.50f, 1.f), "%s", cd);
 
-//
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f, 0.50f, 0.14f, 1.f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.66f, 0.20f, 1.f));
-    ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.f, 1.f, 1.f, 1.f));
-    if (ImGui::Button(L("\xe0\xb8\xa3\xe0\xb8\xb1\xe0\xb8\x9a", "Accept"), ImVec2(60.f, 18.f)))
+    const char* incoming_label = L("\xe0\xb8\xaa\xe0\xb8\xb2\xe0\xb8\xa2\xe0\xb9\x80\xe0\xb8\x82\xe0\xb9\x89\xe0\xb8\xb2", "Incoming call");
+    dl->AddText(ImVec2(win_pos.x + 15.f, win_pos.y + 2.f), IM_COL32(38, 54, 96, 255), incoming_label);
+    const ImVec2 cd_sz = ImGui::CalcTextSize(cd);
+    dl->AddText(ImVec2(win_pos.x + win_w - cd_sz.x - 8.f, win_pos.y + 2.f), IM_COL32(92, 92, 92, 255), cd);
+
+    const ImVec2 star_pos(win_pos.x + 6.f, win_pos.y + 28.f);
+    dl->AddText(star_pos, ImColor(ImVec4(0.58f, 0.18f, 0.82f, pulse)), "*");
+    const float peer_max_w = 74.f;
+    ImVec2 peer_min(win_pos.x + 16.f, win_pos.y + 28.f);
+    ImVec2 peer_max(peer_min.x + peer_max_w, peer_min.y + ImGui::GetTextLineHeight());
+    dl->PushClipRect(peer_min, peer_max, true);
+    dl->AddText(peer_min, IM_COL32(20, 20, 20, 255), peer.c_str());
+    dl->PopClipRect();
+
+    const float btn_y = 54.f;
+    ImGui::SetCursorPos(ImVec2(7.f, btn_y));
+    if (whisper_call_button("##wsp_accept", L("\xe0\xb8\xa3\xe0\xb8\xb1\xe0\xb8\x9a", "Accept"), ImVec2(60.f, 24.f)))
         vc.whisper_accept();
-    ImGui::PopStyleColor(3);
 
-    ImGui::SameLine(0, 4.f);
-
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.50f, 0.12f, 0.12f, 1.f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.66f, 0.18f, 0.18f, 1.f));
-    ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.f, 1.f, 1.f, 1.f));
-    if (ImGui::Button(L("\xe0\xb8\x9b\xe0\xb8\x8f\xe0\xb8\xb4\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\x98", "Decline"), ImVec2(60.f, 18.f)))
+    ImGui::SetCursorPos(ImVec2(69.f, btn_y));
+    if (whisper_call_button("##wsp_decline", L("\xe0\xb8\x9b\xe0\xb8\x8f\xe0\xb8\xb4\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\x98", "Decline"), ImVec2(60.f, 24.f)))
         vc.whisper_reject();
-    ImGui::PopStyleColor(3);
 
     ImGui::End();
-    ImGui::PopStyleVar(5);
+    ImGui::PopStyleVar(2);
 }
 
 //
@@ -1708,6 +1736,9 @@ void shutdown() {
     release_ui_texture(g_btn_ptt_key_hover_tex);
     release_ui_texture(g_btn_call_tex);
     release_ui_texture(g_btn_call_hover_tex);
+    release_ui_texture(g_whisper_call_bg_tex);
+    release_ui_texture(g_btn_whisper_call_tex);
+    release_ui_texture(g_btn_whisper_call_hover_tex);
     release_ui_texture(g_btn_dropdown_tex);
     release_ui_texture(g_close_tex);
     release_ui_texture(g_mic_off_tex);
