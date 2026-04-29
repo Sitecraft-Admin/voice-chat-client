@@ -101,7 +101,7 @@ public:
     void set_mute(bool muted);
     void set_channel(Channel ch);
     // join_room() removed — rooms are managed by map server (UDP chat_join/chat_leave).
-    // The DLL receives room_joined/room_left WS events and switches channel accordingly.
+    // The DLL receives room_joined/room_left voice events and switches channel accordingly.
 
     // ── Whisper ───────────────────────────────────────────────────────────────
     enum class WhisperState { None, Calling, Incoming, Active };
@@ -165,7 +165,7 @@ private:
     void reset_mic_filter_state();
     void update_aec_system_delay();
 
-    // Thread-safe outgoing WS message queue.
+    // Thread-safe outgoing voice message queue.
     // D3D9 / UI thread pushes here; position_loop drains on its own thread
     // so the game render thread never blocks on network I/O.
     std::mutex              ws_send_queue_mtx_;

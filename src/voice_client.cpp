@@ -331,7 +331,7 @@ static void reset_opus_encoder_state(OpusEncoder* enc) {
     if (enc) opus_encoder_ctl(enc, OPUS_RESET_STATE);
 }
 
-// Push an outgoing WS message onto the queue. Safe to call from any thread
+// Push an outgoing voice message onto the queue. Safe to call from any thread
 // (D3D9, capture, etc.). position_loop drains the queue so no blocking I/O
 // ever runs on the game render thread.
 void VoiceClient::enqueue_ws_send(std::string msg) {
@@ -451,7 +451,7 @@ void VoiceClient::on_ws_closed() {
     auth_sent_      = false;
     auth_confirmed_ = false;
     // NOTE: do NOT touch pcm_accum_ here — this function now runs on both
-    // the WS recv thread (server-drop path) AND the position thread (char
+    // the network recv thread (server-drop path) AND the position thread (char
     // switch path), while pcm_accum_ is mutated by the audio capture thread.
     // Clearing it cross-thread was a heap race that crashed the game on
     // char switch with PTT held. The audio thread self-clears pcm_accum_
@@ -991,7 +991,7 @@ void VoiceClient::position_loop() {
     while (running_) {
         Sleep(33);
 
-        // ── Drain outgoing WS queue ───────────────────────────────────────
+        // ── Drain outgoing voice queue ────────────────────────────────────
         // D3D9 / UI thread pushes messages here instead of calling
         // ws_.send_text() directly, so the game render thread never blocks
         // on network I/O.  We drain here under no lock — safe because only
@@ -1027,7 +1027,7 @@ void VoiceClient::position_loop() {
 
             // Keep in_map_ current even while disconnected.
             // This makes is_in_game() return false during char select (map="")
-            // immediately — no need to wait for the server to close the WS.
+            // immediately — no need to wait for the server to close the connection.
             if (!ws_.is_connected())
                 continue;
 
@@ -1069,12 +1069,12 @@ void VoiceClient::position_loop() {
             //
             // Instead we let the server be the sole authority:
             //   • Normal path: map server sends auth_revoke UDP → voice server
-            //     kicks WS → DLL recv gets close → on_ws_closed → reconnect →
+            //     closes connection → DLL recv gets close → on_ws_closed → reconnect →
             //     auth with new char_id.
             //   • Race path (DLL sees char change before server kicks): we reset
             //     auth_sent_ and try_send_auth re-fires on the SAME connection.
             //     Server rejects re-auth ("re-auth on same connection not allowed")
-            //     → kicks WS → same clean reconnect.
+            //     → closes connection → same clean reconnect.
             const int last_auth_char_id = last_auth_char_id_.load();
             if (last_auth_char_id != 0 &&
                 state.char_id != last_auth_char_id &&
@@ -1373,7 +1373,7 @@ void VoiceClient::set_channel(Channel ch) {
 
 // join_room() removed — room membership is managed by the map server via UDP
 // (chat_join / chat_leave).  The voice server updates chat_room_id and sends
-// room_joined / room_left WS events to the DLL; the DLL does not initiate joins.
+// room_joined / room_left voice events to the DLL; the DLL does not initiate joins.
 
 std::vector<std::string> VoiceClient::get_speakers() {
     std::lock_guard lock(speakers_mtx_);
