@@ -6,6 +6,8 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
 
 using INTERNET_PORT = unsigned short;
 
@@ -33,8 +35,16 @@ private:
 
     std::atomic<bool> connected_{ false };
     std::thread       recv_thread_;
+    std::thread       send_thread_;
     std::mutex        conn_mtx_;
-    std::mutex        send_mtx_; // ป้องกัน send จากหลาย thread พร้อมกัน
+    std::mutex        socket_mtx_;
+    std::mutex        queue_mtx_;
+    std::condition_variable queue_cv_;
+    std::deque<std::vector<uint8_t>> send_queue_;
+    std::atomic<size_t> queued_bytes_{ 0 };
+    static constexpr size_t MAX_QUEUED_BYTES = 1024 * 1024;
 
     void recv_loop();
+    void send_loop();
+    bool enqueue_frame(uint8_t type, const uint8_t* data, uint32_t len);
 };

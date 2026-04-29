@@ -72,17 +72,30 @@ static bool recv_all(SOCKET s, uint8_t* data, size_t len) {
     return true;
 }
 
-static bool send_frame(SOCKET s, RawPacketType type, const uint8_t* data, uint32_t len) {
+}
+
+bool WsClient::enqueue_frame(uint8_t type, const uint8_t* data, uint32_t len) {
+    if (!connected_)
+        return false;
+
     std::vector<uint8_t> frame(8 + len);
     write_u16_be(frame.data(), RAW_MAGIC);
     frame[2] = RAW_VERSION;
-    frame[3] = static_cast<uint8_t>(type);
+    frame[3] = type;
     write_u32_be(frame.data() + 4, len);
     if (len && data)
         std::memcpy(frame.data() + 8, data, len);
-    return send_all(s, frame.data(), frame.size());
-}
 
+    const size_t frame_size = frame.size();
+    std::lock_guard<std::mutex> lock(queue_mtx_);
+    if (!connected_)
+        return false;
+    if (queued_bytes_.load() + frame_size > MAX_QUEUED_BYTES)
+        return false;
+    send_queue_.push_back(std::move(frame));
+    queued_bytes_.fetch_add(frame_size);
+    queue_cv_.notify_one();
+    return true;
 }
 
 bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::wstring&) {
@@ -91,7 +104,7 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
     connected_ = false;
     SOCKET old_socket = INVALID_SOCKET;
     {
-        std::lock_guard<std::mutex> send_lock(send_mtx_);
+        std::lock_guard<std::mutex> socket_lock(socket_mtx_);
         old_socket = socket_;
         socket_ = INVALID_SOCKET;
         if (old_socket != INVALID_SOCKET)
@@ -99,8 +112,17 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
     }
     if (recv_thread_.joinable())
         recv_thread_.join();
+    if (send_thread_.joinable()) {
+        queue_cv_.notify_all();
+        send_thread_.join();
+    }
     if (old_socket != INVALID_SOCKET)
         closesocket(old_socket);
+    {
+        std::lock_guard<std::mutex> lock(queue_mtx_);
+        queued_bytes_.store(0);
+        send_queue_.clear();
+    }
     if (wsa_started_) {
         WSACleanup();
         wsa_started_ = false;
@@ -148,12 +170,13 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
     }
 
     {
-        std::lock_guard<std::mutex> send_lock(send_mtx_);
+        std::lock_guard<std::mutex> socket_lock(socket_mtx_);
         socket_ = s;
         connected_ = true;
     }
 
     dbglog("[rawtcp] connect OK");
+    send_thread_ = std::thread([this] { send_loop(); });
     recv_thread_ = std::thread([this] { recv_loop(); });
     return true;
 }
@@ -164,7 +187,7 @@ void WsClient::recv_loop() {
     while (connected_) {
         SOCKET s = INVALID_SOCKET;
         {
-            std::lock_guard<std::mutex> lock(send_mtx_);
+            std::lock_guard<std::mutex> lock(socket_mtx_);
             s = socket_;
         }
         if (s == INVALID_SOCKET)
@@ -205,21 +228,61 @@ void WsClient::recv_loop() {
 }
 
 bool WsClient::send_text(const std::string& msg) {
-    std::lock_guard<std::mutex> lock(send_mtx_);
-    if (!connected_ || socket_ == INVALID_SOCKET)
-        return false;
-    return send_frame(socket_, RawPacketType::Text,
-                      reinterpret_cast<const uint8_t*>(msg.data()),
-                      static_cast<uint32_t>(msg.size()));
+    return enqueue_frame(static_cast<uint8_t>(RawPacketType::Text),
+                         reinterpret_cast<const uint8_t*>(msg.data()),
+                         static_cast<uint32_t>(msg.size()));
 }
 
 bool WsClient::send_binary(const std::vector<uint8_t>& data) {
-    std::lock_guard<std::mutex> lock(send_mtx_);
-    if (!connected_ || socket_ == INVALID_SOCKET)
-        return false;
-    return send_frame(socket_, RawPacketType::Binary,
-                      data.data(),
-                      static_cast<uint32_t>(data.size()));
+    return enqueue_frame(static_cast<uint8_t>(RawPacketType::Binary),
+                         data.data(),
+                         static_cast<uint32_t>(data.size()));
+}
+
+void WsClient::send_loop() {
+    dbglog("[rawtcp] send loop started");
+    while (true) {
+        std::vector<uint8_t> frame;
+        {
+            std::unique_lock<std::mutex> lock(queue_mtx_);
+            queue_cv_.wait(lock, [this] { return !connected_ || !send_queue_.empty(); });
+            if (!connected_) {
+                queued_bytes_.store(0);
+                send_queue_.clear();
+                break;
+            }
+            if (send_queue_.empty()) {
+                continue;
+            }
+            frame = std::move(send_queue_.front());
+            send_queue_.pop_front();
+            queued_bytes_.fetch_sub(frame.size());
+        }
+
+        SOCKET s = INVALID_SOCKET;
+        {
+            std::lock_guard<std::mutex> lock(socket_mtx_);
+            s = socket_;
+        }
+        if (s == INVALID_SOCKET || !send_all(s, frame.data(), frame.size())) {
+            SOCKET to_close = INVALID_SOCKET;
+            {
+                std::lock_guard<std::mutex> lock(socket_mtx_);
+                to_close = socket_;
+                socket_ = INVALID_SOCKET;
+            }
+            if (to_close != INVALID_SOCKET) {
+                shutdown(to_close, SD_BOTH);
+                closesocket(to_close);
+            }
+            const bool was_connected = connected_.exchange(false);
+            queue_cv_.notify_all();
+            if (was_connected && on_close)
+                on_close();
+            break;
+        }
+    }
+    dbglog("[rawtcp] send loop ended");
 }
 
 void WsClient::disconnect() {
@@ -227,21 +290,28 @@ void WsClient::disconnect() {
 
     SOCKET s = INVALID_SOCKET;
     {
-        std::lock_guard<std::mutex> lock(send_mtx_);
+        std::lock_guard<std::mutex> lock(socket_mtx_);
         connected_ = false;
         s = socket_;
         socket_ = INVALID_SOCKET;
         if (s != INVALID_SOCKET) {
-            send_frame(s, RawPacketType::Close, nullptr, 0);
             shutdown(s, SD_BOTH);
         }
     }
+    queue_cv_.notify_all();
 
     if (recv_thread_.joinable())
         recv_thread_.join();
+    if (send_thread_.joinable())
+        send_thread_.join();
 
     if (s != INVALID_SOCKET)
         closesocket(s);
+    {
+        std::lock_guard<std::mutex> lock(queue_mtx_);
+        queued_bytes_.store(0);
+        send_queue_.clear();
+    }
     if (wsa_started_) {
         WSACleanup();
         wsa_started_ = false;
