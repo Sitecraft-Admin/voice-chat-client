@@ -101,12 +101,17 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
         recv_thread_.join();
     if (old_socket != INVALID_SOCKET)
         closesocket(old_socket);
+    if (wsa_started_) {
+        WSACleanup();
+        wsa_started_ = false;
+    }
 
     WSADATA wsa{};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         dbglog("[rawtcp] WSAStartup FAILED");
         return false;
     }
+    wsa_started_ = true;
 
     const std::string host8 = wide_to_utf8(host);
     addrinfo hints{};
@@ -119,6 +124,7 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
     if (getaddrinfo(host8.c_str(), port_s.c_str(), &hints, &result) != 0 || !result) {
         dbglog("[rawtcp] getaddrinfo FAILED");
         WSACleanup();
+        wsa_started_ = false;
         return false;
     }
 
@@ -137,6 +143,7 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
     if (s == INVALID_SOCKET) {
         dbglog("[rawtcp] connect FAILED");
         WSACleanup();
+        wsa_started_ = false;
         return false;
     }
 
@@ -155,7 +162,11 @@ void WsClient::recv_loop() {
     dbglog("[rawtcp] recv loop started");
 
     while (connected_) {
-        SOCKET s = socket_;
+        SOCKET s = INVALID_SOCKET;
+        {
+            std::lock_guard<std::mutex> lock(send_mtx_);
+            s = socket_;
+        }
         if (s == INVALID_SOCKET)
             break;
 
@@ -231,7 +242,10 @@ void WsClient::disconnect() {
 
     if (s != INVALID_SOCKET)
         closesocket(s);
-    WSACleanup();
+    if (wsa_started_) {
+        WSACleanup();
+        wsa_started_ = false;
+    }
 
     dbglog("[rawtcp] disconnect done");
 }

@@ -29,6 +29,7 @@ public:
 
 private:
     UINT_PTR socket_ = ~static_cast<UINT_PTR>(0);
+    bool     wsa_started_ = false;
 
     std::atomic<bool> connected_{ false };
     std::thread       recv_thread_;
