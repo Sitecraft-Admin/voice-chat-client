@@ -22,10 +22,8 @@
 //      corrupt the filter). DTX frames (silent reference) skip processing
 //      entirely — no echo possible.
 //
-// Tunable knobs at the bottom. Defaults pick a 128-tap (≈2.7 ms at 48 kHz)
-// short filter. Most RO users run with speakers a few cm from the mic, so the
-// effective echo impulse response is short; a longer filter would just add
-// adaptation lag without catching extra tail.
+// x_buf_ uses a double-length circular buffer so the sliding tap window is
+// always contiguous — no memmove per sample, O(1) slide.
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -34,7 +32,6 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <cstring>  // memmove
 #include <mutex>
 #include <vector>
 
@@ -43,8 +40,13 @@ public:
     EchoCanceller() {
         h_.assign(FILTER_LEN, 0.0f);
         ref_ring_.assign(REF_RING_SIZE, 0.0f);
-        x_buf_.assign(FILTER_LEN, 0.0f);   // pre-allocated tap window
+        // Double-length buffer: x_buf_[0..FILTER_LEN-1] and
+        // x_buf_[FILTER_LEN..2*FILTER_LEN-1] are kept as mirror copies.
+        // x_head_ is the index of the most-recent sample; the tap window is
+        // always the contiguous slice x_buf_[x_head_..x_head_+FILTER_LEN-1].
+        x_buf_.assign(FILTER_LEN * 2, 0.0f);
         ref_write_ = 0;
+        x_head_    = 0;
     }
 
     void set_enabled(bool v) { enabled_.store(v, std::memory_order_relaxed); }
@@ -69,6 +71,7 @@ public:
         std::fill(ref_ring_.begin(), ref_ring_.end(), 0.0f);
         std::fill(x_buf_.begin(), x_buf_.end(), 0.0f);
         ref_write_ = 0;
+        x_head_    = 0;
         erle_ewma_ = 0.0f;
     }
 
@@ -107,22 +110,29 @@ public:
         // render).
         size_t read_base = (ref_write_ + REF_RING_SIZE - system_delay_samples_) % REF_RING_SIZE;
 
-        // Load the tap window from the reference ring into the pre-allocated
-        // x_buf_ (avoids a heap allocation on every 20 ms frame).
+        // Load the tap window into both halves of the double-length buffer so
+        // that x_buf_[x_head_..x_head_+FILTER_LEN-1] is always contiguous.
         for (size_t i = 0; i < FILTER_LEN; i++) {
             size_t idx = (read_base + REF_RING_SIZE - i) % REF_RING_SIZE;
-            x_buf_[i] = ref_ring_[idx];
+            x_buf_[i]              = ref_ring_[idx];
+            x_buf_[i + FILTER_LEN] = ref_ring_[idx];
         }
+        x_head_ = 0;
+
         float xpow = 0.0f;
-        for (float v : x_buf_) xpow += v * v;
+        for (size_t k = 0; k < FILTER_LEN; k++) xpow += x_buf_[k] * x_buf_[k];
 
         for (size_t n_i = 0; n_i < n; n_i++) {
             float y = pcm[n_i] * (1.0f / 32768.0f);
 
+            // Contiguous tap window — x_head_ keeps the newest sample at [0]
+            // relative to xp, oldest at [FILTER_LEN-1]. No modulo in loops.
+            const float* xp = x_buf_.data() + x_head_;
+
             // ĥᵀ x — echo estimate
             float y_est = 0.0f;
             for (size_t k = 0; k < FILTER_LEN; k++)
-                y_est += h_[k] * x_buf_[k];
+                y_est += h_[k] * xp[k];
 
             // Error / echo-removed sample
             float e = y - y_est;
@@ -138,7 +148,7 @@ public:
             if (!doubletalk && xpow > 1e-6f) {
                 float mu = NLMS_STEP / (xpow + 1e-6f);
                 for (size_t k = 0; k < FILTER_LEN; k++)
-                    h_[k] += mu * e * x_buf_[k];
+                    h_[k] += mu * e * xp[k];
             }
 
             // Track ERLE (Echo Return Loss Enhancement) just for diagnostics.
@@ -152,12 +162,16 @@ public:
             if (eo < -1.f) eo = -1.f;
             pcm[n_i] = static_cast<int16_t>(eo * 32767.f);
 
-            // Slide tap window by one sample for the next iteration.
+            // Slide tap window by one sample — O(1), no memmove.
+            // Grab the oldest sample (last in current window) before moving head.
+            float dropped = xp[FILTER_LEN - 1];
             read_base = (read_base + 1) % REF_RING_SIZE;
             float new_x = ref_ring_[read_base];
-            float dropped = x_buf_.back();
-            std::memmove(&x_buf_[1], &x_buf_[0], (FILTER_LEN - 1) * sizeof(float));
-            x_buf_[0] = new_x;
+            // Decrement head (wraps at FILTER_LEN); write new sample in both halves.
+            if (x_head_ == 0) x_head_ = FILTER_LEN;
+            x_head_--;
+            x_buf_[x_head_]              = new_x;
+            x_buf_[x_head_ + FILTER_LEN] = new_x;
             xpow += new_x * new_x - dropped * dropped;
             if (xpow < 0.0f) xpow = 0.0f;   // defend against rounding drift
         }
@@ -200,8 +214,12 @@ private:
     mutable std::mutex  mtx_;
     std::vector<float>  h_;           // adaptive filter coefficients
     std::vector<float>  ref_ring_;    // far-end reference ring buffer
-    std::vector<float>  x_buf_;       // tap window — pre-allocated, reused each frame
+    // Double-length circular tap window (2 × FILTER_LEN).
+    // x_head_ = index of most-recent sample; read window is always
+    // x_buf_[x_head_..x_head_+FILTER_LEN-1] — contiguous, no modulo.
+    std::vector<float>  x_buf_;
+    size_t              x_head_              = 0;
     size_t              ref_write_           = 0;
-    float               erle_ewma_          = 0.0f;
+    float               erle_ewma_           = 0.0f;
     size_t              system_delay_samples_= 1440; // default 30 ms; updated from WASAPI
 };

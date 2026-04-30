@@ -495,8 +495,12 @@ std::vector<int16_t> AudioCapture::convert_to_pcm16(const BYTE* data, UINT32 fra
 void AudioCapture::stop() {
     ScopedCoInit co_init;
     running_ = false;
+    // Stop WASAPI *before* joining the capture thread so GetNextPacketSize
+    // immediately returns an error and the thread exits cleanly rather than
+    // spinning on 5 ms sleeps until the join timeout fires.
+    if (client_) client_->Stop();
     if (thread_) { WaitForSingleObject(thread_, 2000); CloseHandle(thread_); thread_ = nullptr; }
-    if (client_)    { client_->Stop(); client_->Release();    client_    = nullptr; }
+    if (client_)    { client_->Release();    client_    = nullptr; }
     if (capture_)   { capture_->Release();                    capture_   = nullptr; }
     if (device_)    { device_->Release();                     device_    = nullptr; }
     if (enumerator_){ enumerator_->Release();                 enumerator_= nullptr; }
