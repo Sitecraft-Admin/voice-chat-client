@@ -1138,6 +1138,8 @@ void VoiceClient::update_aec_system_delay() {
 }
 
 void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
+    static int s_tx_speech_hangover = 0;
+
     // Periodically sync AEC system delay from real WASAPI latencies.
     // Runs once every ~100 frames (2 s) so it catches device switches too.
     {
@@ -1171,6 +1173,7 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
     }
 
     if (!ws_.is_connected() || !in_map_.load() || muted_.load() || deafened_.load() || !ptt_active_.load() || !auth_sent_ || !opus_enc_) {
+        s_tx_speech_hangover = 0;
         // Always clear accumulator when not transmitting so stale audio
         // cannot leak into the next PTT press or reconnect.
         if (!pcm_accum_.empty()) {
@@ -1202,12 +1205,26 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
         noise_suppressor_.process(pcm_accum_.data(), FRAME);
         apply_soft_limiter(pcm_accum_.data(), FRAME);
 
+        double tx_sumsq = 0.0;
+        for (size_t i = 0; i < FRAME; ++i) {
+            const double s = pcm_accum_[i] * (1.0 / 32768.0);
+            tx_sumsq += s * s;
+        }
+        const float tx_rms = static_cast<float>(std::sqrt(tx_sumsq / static_cast<double>(FRAME)));
+        constexpr float kTxSpeechRmsThreshold = 0.006f;
+        constexpr int kTxSpeechHangoverFrames = 12; // 240 ms at 20 ms/frame
+        if (tx_rms >= kTxSpeechRmsThreshold) {
+            s_tx_speech_hangover = kTxSpeechHangoverFrames;
+        } else if (s_tx_speech_hangover > 0) {
+            --s_tx_speech_hangover;
+        }
+
         // If VAD says non-speech, drop the frame before Opus encode.
         // Opus DTX would still produce a comfort-noise packet, but we'd
         // rather not transmit at all while the user isn't speaking — saves
         // bandwidth at scale (3000 players) and reduces background-noise
         // leakage when PTT is not the gating mechanism (open-mic mode).
-        if (!is_speech) {
+        if (!is_speech || (tx_rms < kTxSpeechRmsThreshold && s_tx_speech_hangover <= 0)) {
             pcm_accum_.erase(pcm_accum_.begin(), pcm_accum_.begin() + FRAME);
             continue;
         }
