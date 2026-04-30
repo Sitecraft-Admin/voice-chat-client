@@ -12,6 +12,9 @@ constexpr uint16_t RAW_MAGIC = 0x5654; // "VT"
 constexpr uint8_t RAW_VERSION = 1;
 constexpr uint32_t RAW_MAX_PAYLOAD = 1024 * 1024;
 
+static std::mutex g_wsa_mtx;
+static bool g_wsa_started = false;
+
 enum class RawPacketType : uint8_t {
     Text = 1,
     Binary = 2,
@@ -72,6 +75,19 @@ static bool recv_all(SOCKET s, uint8_t* data, size_t len) {
     return true;
 }
 
+static bool ensure_wsa_started() {
+    std::lock_guard<std::mutex> lock(g_wsa_mtx);
+    if (g_wsa_started)
+        return true;
+
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+        return false;
+
+    g_wsa_started = true;
+    return true;
+}
+
 }
 
 bool WsClient::enqueue_frame(uint8_t type, const uint8_t* data, uint32_t len) {
@@ -123,17 +139,10 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
         queued_bytes_.store(0);
         send_queue_.clear();
     }
-    if (wsa_started_) {
-        WSACleanup();
-        wsa_started_ = false;
-    }
-
-    WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    if (!ensure_wsa_started()) {
         dbglog("[rawtcp] WSAStartup FAILED");
         return false;
     }
-    wsa_started_ = true;
 
     const std::string host8 = wide_to_utf8(host);
     addrinfo hints{};
@@ -145,8 +154,6 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
     const std::string port_s = std::to_string(port);
     if (getaddrinfo(host8.c_str(), port_s.c_str(), &hints, &result) != 0 || !result) {
         dbglog("[rawtcp] getaddrinfo FAILED");
-        WSACleanup();
-        wsa_started_ = false;
         return false;
     }
 
@@ -164,8 +171,6 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
 
     if (s == INVALID_SOCKET) {
         dbglog("[rawtcp] connect FAILED");
-        WSACleanup();
-        wsa_started_ = false;
         return false;
     }
 
@@ -312,10 +317,5 @@ void WsClient::disconnect() {
         queued_bytes_.store(0);
         send_queue_.clear();
     }
-    if (wsa_started_) {
-        WSACleanup();
-        wsa_started_ = false;
-    }
-
     dbglog("[rawtcp] disconnect done");
 }

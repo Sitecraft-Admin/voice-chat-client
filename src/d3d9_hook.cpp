@@ -23,6 +23,13 @@ static Reset_t    oReset    = nullptr;
 
 static bool g_installed   = false;
 static LPDIRECT3DDEVICE9 g_game_device = nullptr;
+static void** g_game_vtable = nullptr; // saved for uninstall / device replacement
+
+HRESULT APIENTRY hkEndScene(LPDIRECT3DDEVICE9 pDevice);
+HRESULT APIENTRY hkPresent(LPDIRECT3DDEVICE9 pDevice,
+                           const RECT* pSrcRect, const RECT* pDstRect,
+                           HWND hWnd, const RGNDATA* pDirtyRegion);
+HRESULT APIENTRY hkReset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPP);
 
 // ── Vtable patch helper ───────────────────────────────────────────
 
@@ -31,6 +38,22 @@ static void vtable_patch(void** vt, int idx, void* hook) {
     VirtualProtect(&vt[idx], sizeof(void*), PAGE_EXECUTE_READWRITE, &old);
     vt[idx] = hook;
     VirtualProtect(&vt[idx], sizeof(void*), old, &old);
+}
+
+static void patch_game_vtable(void** vt) {
+    if (!vt) return;
+    vtable_patch(vt, VTI_ENDSCENE, reinterpret_cast<void*>(&hkEndScene));
+    vtable_patch(vt, VTI_PRESENT,  reinterpret_cast<void*>(&hkPresent));
+    vtable_patch(vt, VTI_RESET,    reinterpret_cast<void*>(&hkReset));
+    g_game_vtable = vt;
+}
+
+static void restore_game_vtable() {
+    if (!g_game_vtable) return;
+    if (oEndScene) vtable_patch(g_game_vtable, VTI_ENDSCENE, reinterpret_cast<void*>(oEndScene));
+    if (oPresent)  vtable_patch(g_game_vtable, VTI_PRESENT,  reinterpret_cast<void*>(oPresent));
+    if (oReset)    vtable_patch(g_game_vtable, VTI_RESET,    reinterpret_cast<void*>(oReset));
+    g_game_vtable = nullptr;
 }
 
 // ── Inline JMP hook — used ONLY to discover the game's vtable ────
@@ -86,6 +109,7 @@ static bool g_rendered_this_frame = false;
 static void do_frame(LPDIRECT3DDEVICE9 pDevice) {
     if (!g_game_device) {
         dbglog("[D3D] first device, init overlay");
+        pDevice->AddRef();
         g_game_device = pDevice;
         Overlay::init(pDevice);
     } else if (pDevice != g_game_device) {
@@ -93,7 +117,15 @@ static void do_frame(LPDIRECT3DDEVICE9 pDevice) {
         sprintf_s(b, "[D3D] new device %p (old %p), re-init", pDevice, g_game_device);
         dbglog(b);
         Overlay::shutdown();
+        LPDIRECT3DDEVICE9 old_device = g_game_device;
+        void** new_vt = *reinterpret_cast<void***>(pDevice);
+        restore_game_vtable();
+        if (old_device)
+            old_device->Release();
+        pDevice->AddRef();
         g_game_device = pDevice;
+        patch_game_vtable(new_vt);
+        dbglog("[D3D9Hook] vtable moved to replacement device");
         Overlay::init(pDevice);
     }
     Overlay::render(pDevice);
@@ -149,9 +181,7 @@ HRESULT APIENTRY hkEndSceneTemp(LPDIRECT3DDEVICE9 pDevice) {
     temp_hook_remove();
 
     // 4. Patch the game device's vtable with our final hooks
-    vtable_patch(vt, VTI_ENDSCENE, reinterpret_cast<void*>(&hkEndScene));
-    vtable_patch(vt, VTI_PRESENT,  reinterpret_cast<void*>(&hkPresent));
-    vtable_patch(vt, VTI_RESET,    reinterpret_cast<void*>(&hkReset));
+    patch_game_vtable(vt);
     dbglog("[D3D9Hook] vtable patched on game device");
 
     g_installed = true;
@@ -161,8 +191,6 @@ HRESULT APIENTRY hkEndSceneTemp(LPDIRECT3DDEVICE9 pDevice) {
 }
 
 // ── Install ───────────────────────────────────────────────────────
-
-static void** g_game_vtable = nullptr; // saved for uninstall
 
 bool D3D9Hook::install() {
     {
@@ -226,15 +254,11 @@ void D3D9Hook::uninstall() {
 
     if (!g_installed) return;
 
-    // Restore vtable
-    if (g_game_device) {
-        void** vt = *reinterpret_cast<void***>(g_game_device);
-        if (oEndScene) vtable_patch(vt, VTI_ENDSCENE, reinterpret_cast<void*>(oEndScene));
-        if (oPresent)  vtable_patch(vt, VTI_PRESENT,  reinterpret_cast<void*>(oPresent));
-        if (oReset)    vtable_patch(vt, VTI_RESET,     reinterpret_cast<void*>(oReset));
-    }
+    restore_game_vtable();
 
     Overlay::shutdown();
+    if (g_game_device)
+        g_game_device->Release();
     g_installed   = false;
     g_game_device = nullptr;
     dbglog("[D3D9Hook] uninstalled");
