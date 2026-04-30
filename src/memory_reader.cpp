@@ -31,6 +31,16 @@ ROState MemoryReader::read() {
     st.auth_ready = (st.account_id > 0 && st.char_id > 0);
     st.valid      = st.auth_ready;
 
+    static bool s_had_valid_state = false;
+    static bool s_logged_invalid_after_valid = false;
+    if (st.valid) {
+        s_had_valid_state = true;
+        s_logged_invalid_after_valid = false;
+    } else if (s_had_valid_state && !s_logged_invalid_after_valid) {
+        dbglog("[mem] lost readable AID/CID state");
+        s_logged_invalid_after_valid = true;
+    }
+
 #ifdef VOICE_LOG
     static DWORD s_last_log = 0;
     DWORD now = GetTickCount();
