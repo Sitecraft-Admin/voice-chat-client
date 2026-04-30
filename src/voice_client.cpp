@@ -7,18 +7,11 @@
 #include <Windows.h>
 #include "obf_string.hpp"
 #include "anti_tamper.hpp"
-#include "hwid.hpp"
 
 using json = nlohmann::json;
 
 #include "dbglog.hpp"
 #include <cstdint>
-
-// Cached at first auth; stays constant for the lifetime of the process.
-static const std::string& get_hwid() {
-    static std::string id = hwid::get();
-    return id;
-}
 
 static uint64_t g_voice_session_id = 0;
 static uint64_t make_session_id() {
@@ -589,7 +582,6 @@ void VoiceClient::try_send_auth() {
     auth["account_id"] = st.account_id;
     auth["char_id"]    = st.char_id;
     auth["session_id"] = g_voice_session_id;
-    auth["hwid"]       = get_hwid();
     auth["secret"]     = client_secret_;
 
     if (ws_.send_text(auth.dump())) {
