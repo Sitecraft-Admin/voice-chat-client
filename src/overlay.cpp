@@ -1405,6 +1405,250 @@ void draw_whisper_popup() {
 //
 //
 //
+// Single-window voice bar — no stutter (replaces ##vc + ##ch pair)
+//
+void draw_voicebar_call_window() {
+    ImGuiIO& io = ImGui::GetIO();
+    ensure_ui_assets(g_ui_device);
+
+    auto& vc        = VoiceClient::get();
+    bool  connected = vc.is_connected();
+    bool  ptt       = vc.is_locally_talking();
+    bool  muted     = vc.is_muted();
+    bool  deafened  = vc.is_deafened();
+    Channel ch      = vc.get_channel();
+
+    UiTexture* state_tex = &g_badge_idle_tex;
+    if (!connected)            state_tex = &g_badge_connecting_tex;
+    else if (muted && deafened) state_tex = &g_badge_mute_tex;
+    else if (muted)             state_tex = &g_badge_mic_off_tex;
+    else if (deafened)          state_tex = &g_badge_spk_off_tex;
+    else if (ptt)               state_tex = &g_badge_talk_tex;
+
+    const float badge_w = state_tex && state_tex->tex ? (float)state_tex->width  : 70.f;
+    const float badge_h = state_tex && state_tex->tex ? (float)state_tex->height : 54.f;
+
+    // Always anchor to bottom-right corner
+    ImGui::SetNextWindowPos(
+        ImVec2(io.DisplaySize.x - 5.f, io.DisplaySize.y - 2.f),
+        ImGuiCond_Always, ImVec2(1.f, 1.f));
+
+    constexpr ImGuiWindowFlags kFlags =
+        ImGuiWindowFlags_NoDecoration       |
+        ImGuiWindowFlags_NoMove             |
+        ImGuiWindowFlags_AlwaysAutoResize   |
+        ImGuiWindowFlags_NoSavedSettings    |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav              |
+        ImGuiWindowFlags_NoBackground;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5.f, 4.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(4.f, 0.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,  ImVec2(6.f, 2.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.f);
+
+    ImGui::Begin("##vcbar2", nullptr, kFlags);
+
+    const ImVec2 win_pos = ImGui::GetWindowPos();
+
+    // Draw background rect (buttons area only, NOT behind slime).
+    // Use GetWindowDrawList so the rect is drawn BEFORE items in draw order —
+    // buttons/icons appear ON TOP; slime is outside the rect's x-range entirely.
+    static ImVec2 s_bar_min{0.f,0.f}, s_bar_max{0.f,0.f};
+    if (s_bar_max.x > s_bar_min.x) {
+        auto* dl = ImGui::GetWindowDrawList();
+        // Push clip rect that covers the full bar width so the left rounded corner
+        // isn't clipped by the window's inner content clip (win_pos.x + WindowPadding).
+        dl->PushClipRect(s_bar_min, s_bar_max, false);
+        dl->AddRectFilled(s_bar_min, s_bar_max, IM_COL32(35,38,43,int(0.72f*255)), 4.f);
+        dl->PopClipRect();
+    }
+
+    // Push buttons DOWN to match original ##ch placement.
+    // ##ch was anchored: bottom = slime_bottom - 2px  →  button strip in slime's lower area.
+    // Derived: CursorPosY = badge_h - 16  (= 38 for 54px slime)
+    ImGui::SetCursorPosY(badge_h - 16.f);
+
+    const ImVec2 icon_btn_size(24.f, 18.f);
+    const ImVec4 icon_bg        = ImVec4(0.20f, 0.23f, 0.27f, 0.95f);
+    const ImVec4 icon_bg_hover  = ImVec4(0.27f, 0.31f, 0.36f, 1.00f);
+    const ImVec4 icon_off_bg    = ImVec4(0.45f, 0.15f, 0.15f, 0.95f);
+    const ImVec4 icon_off_hover = ImVec4(0.56f, 0.20f, 0.20f, 1.00f);
+
+    // [Speaker toggle]
+    if (icon_badge_button("##spk_toggle", icon_btn_size,
+            deafened ? BadgeIconKind::SpeakerMuted : BadgeIconKind::Speaker,
+            deafened ? icon_off_bg : icon_bg,
+            deafened ? icon_off_hover : icon_bg_hover,
+            IM_COL32_WHITE)) {
+        const bool next_deafen = !deafened;
+        vc.set_deafen(next_deafen);
+        deafened = next_deafen;
+        muted = vc.is_muted();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", deafened ? "Enable speaker" : "Disable speaker");
+    ImGui::SameLine(0, 4.f);
+
+    // [Channel buttons / whisper strip]
+    auto ws2 = vc.get_whisper_state();
+    bool in_whisper_ui = (ch == Channel::Whisper)
+                      || (ws2 == VoiceClient::WhisperState::Calling);
+    const bool war_mode = vc.is_war_mode();
+
+    if (in_whisper_ui) {
+        float ct = (float)ImGui::GetTime();
+        if (ws2 == VoiceClient::WhisperState::Calling) {
+            float pulse = 0.70f + 0.30f * sinf(ct * 5.f);
+            std::string peer = vc.get_whisper_peer();
+            ImGui::TextColored(ImVec4(0.80f, 0.40f, 1.00f, pulse),
+                               ">> %s", peer.empty() ? "..." : peer.c_str());
+        } else {
+            float pulse = 0.75f + 0.25f * sinf(ct * 2.f);
+            ImGui::TextColored(ImVec4(0.80f, 0.40f, 1.00f, pulse), "[W]");
+            ImGui::SameLine(0, 4.f);
+            std::string peer = vc.get_whisper_peer();
+            ImGui::TextColored(ImVec4(0.95f, 0.95f, 0.95f, 1.f),
+                               "%s", peer.empty() ? "..." : peer.c_str());
+        }
+        ImGui::SameLine(0, 8.f);
+        const char* end_lbl = (ws2 == VoiceClient::WhisperState::Calling)
+            ? L("\xe0\xb8\xa2\xe0\xb8\x81\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb8\xb4\xe0\xb8\x81", "Cancel")
+            : L("\xe0\xb8\xa7\xe0\xb8\xb2\xe0\xb8\x87\xe0\xb8\xaa\xe0\xb8\xb2\xe0\xb8\xa2", "Hang up");
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.58f, 0.12f, 0.12f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.74f, 0.18f, 0.18f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.f,   1.f,   1.f,   1.f));
+        if (ImGui::Button(end_lbl, ImVec2(0.f, 18.f)))
+            vc.whisper_end();
+        ImGui::PopStyleColor(3);
+    } else {
+        struct ChTab { const char* label; Channel ch; };
+        ChTab tabs[4] = {
+            { L("\xe0\xb8\x9b\xe0\xb8\x81\xe0\xb8\x95\xe0\xb8\xb4",            "Normal"), Channel::Normal },
+            { L("\xe0\xb8\x9b\xe0\xb8\xb2\xe0\xb8\xa3\xe0\xb9\x8c\xe0\xb8\x95\xe0\xb8\xb5\xe0\xb9\x89", "Party"),  Channel::Party  },
+            { L("\xe0\xb8\x81\xe0\xb8\xb4\xe0\xb8\xa5\xe0\xb8\x94\xe0\xb9\x8c", "Guild"),  Channel::Guild  },
+            { L("\xe0\xb8\xab\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\x87",             "Room"),   Channel::Room   },
+        };
+        for (int i = 0; i < 4; i++) {
+            bool sel = (ch == tabs[i].ch);
+            const bool room_unavail = (tabs[i].ch == Channel::Room) && (ch != Channel::Room);
+            const bool blocked = room_unavail
+                              || (war_mode && (tabs[i].ch == Channel::Normal || tabs[i].ch == Channel::Room));
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                sel ? ImVec4(0.18f, 0.50f, 0.18f, 1.f)
+                    : blocked ? ImVec4(0.18f, 0.18f, 0.18f, 0.55f)
+                              : ImVec4(0.25f, 0.25f, 0.25f, 0.85f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                sel ? ImVec4(0.22f, 0.60f, 0.22f, 1.f)
+                    : blocked ? ImVec4(0.24f, 0.24f, 0.24f, 0.60f)
+                              : ImVec4(0.38f, 0.38f, 0.38f, 0.90f));
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                sel ? ImVec4(1.f, 1.f, 1.f, 1.f)
+                    : blocked ? ImVec4(0.45f, 0.45f, 0.45f, 0.90f)
+                              : ImVec4(0.72f, 0.72f, 0.72f, 1.f));
+            if (ImGui::Button(tabs[i].label, ImVec2(0.f, 18.f)) && !blocked)
+                vc.set_channel(tabs[i].ch);
+            if (room_unavail && ImGui::IsItemHovered())
+                ImGui::SetTooltip("Auto-assigned when in a chat room");
+            ImGui::PopStyleColor(3);
+            if (i < 3) ImGui::SameLine(0, 4.f);
+        }
+    }
+
+    ImGui::SameLine(0, 4.f);
+    // [Mic toggle]
+    if (icon_badge_button("##mic_toggle", icon_btn_size,
+            muted ? BadgeIconKind::MicMuted : BadgeIconKind::Mic,
+            muted ? icon_off_bg : icon_bg,
+            muted ? icon_off_hover : icon_bg_hover,
+            IM_COL32_WHITE)) {
+        vc.set_mute(!muted);
+        muted = !muted;
+    }
+    // Capture button strip right edge BEFORE tooltip changes last-item state
+    const ImVec2 bar_end_scr = ImGui::GetItemRectMax();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", muted ? "Enable mic" : "Disable mic");
+
+    // [Slime badge — right side, no background behind it]
+    // Move cursor back UP to window top so slime sits above the button strip,
+    // exactly as in the original ##vc window which was anchored at bottom-right.
+    if (state_tex && state_tex->tex) {
+        ImGui::SameLine(0, 12.f); // +6px right
+        ImGui::SetCursorPosY(10.f); // 4 + 6px down
+        ImGui::Image((ImTextureID)state_tex->tex,
+                     ImVec2(badge_w, badge_h),
+                     ImVec2(0.f, 0.f), ImVec2(state_tex->u1, state_tex->v1));
+        if (ImGui::IsItemHovered()) {
+            const char* status = L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice");
+            if (!connected) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline");
+            else if (deafened) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\xab\xe0\xb8\xb9", "Deafened");
+            else if (muted) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Muted");
+            else if (ptt) status = L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking");
+            ImGui::SetTooltip("%s", status);
+        }
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            if (!g_settings_open) {
+                g_settings_open = true;
+                g_devs_loaded = false;
+            } else {
+                close_settings();
+            }
+        }
+    }
+
+    // Update hit rects (win_pos captured earlier, right after Begin)
+    const ImVec2 win_size = ImGui::GetWindowSize();
+    g_badge_hit_min   = win_pos;
+    g_badge_hit_max   = ImVec2(win_pos.x + win_size.x, win_pos.y + win_size.y);
+    g_channel_hit_min = g_badge_hit_min;
+    g_channel_hit_max = g_badge_hit_max;
+
+    // Background rect: button strip only (spk→mic), NOT behind slime.
+    // y-range mirrors original ##ch window: top = btn_top - WindowPadding.y (4),
+    //                                        bottom = btn_bottom + WindowPadding.y (4)
+    // bar_end_scr.y = btn_bottom → top = bar_end_scr.y - 18 - 4 = bar_end_scr.y - 22
+    s_bar_min = ImVec2(win_pos.x,            bar_end_scr.y - 22.f);
+    s_bar_max = ImVec2(bar_end_scr.x + 5.f, bar_end_scr.y + 4.f);
+
+    ImGui::End();
+    ImGui::PopStyleVar(5);
+
+    // Whisper notice toast
+    {
+        auto& vn = VoiceClient::get();
+        std::string notice = vn.get_whisper_notice();
+        if (!notice.empty()) {
+            DWORD age = GetTickCount() - vn.get_whisper_notice_tick();
+            if (age < 3000) {
+                float alpha = (age < 2500) ? 1.f : 1.f - (float)(age - 2500) / 500.f;
+                ImGui::SetNextWindowPos(
+                    ImVec2(win_pos.x + win_size.x, win_pos.y - 30.f),
+                    ImGuiCond_Always, ImVec2(1.f, 1.f));
+                ImGui::SetNextWindowBgAlpha(0.75f * alpha);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,  ImVec2(7.f, 4.f));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.f);
+                ImGui::Begin("##wsp_notice", nullptr,
+                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                    ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+                if (notice == "War Mode") {
+                    ImGui::TextColored(ImVec4(1.f, 0.78f, 0.20f, alpha), "%s", notice.c_str());
+                } else {
+                    ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, alpha),
+                        "Whisper: %s", notice.c_str());
+                }
+                ImGui::End();
+                ImGui::PopStyleVar(2);
+            } else {
+                vn.clear_whisper_notice();
+            }
+        }
+    }
+}
+
+//
 //
 void draw_voice_window() {
     ImGuiIO& io = ImGui::GetIO();
@@ -1800,7 +2044,7 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
     g_whisper_popup = in_game &&
         (vc.get_whisper_state() == VoiceClient::WhisperState::Incoming);
 
-    if (g_visible && in_game && g_badge_visible) draw_voice_window();
+    if (g_visible && in_game && g_badge_visible) draw_voicebar_call_window();
     if (g_settings_open && in_game) draw_settings_window();
     if (g_whisper_popup)             draw_whisper_popup();
     if (g_call_popup && in_game)     draw_call_popup();
