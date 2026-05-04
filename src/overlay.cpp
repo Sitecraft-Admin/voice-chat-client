@@ -59,7 +59,8 @@ static bool g_binding_key   = false; // waiting for key press
 static bool g_whisper_popup = false; // true while incoming-call popup is visible
 static bool g_call_popup    = false; // true while "call by name" input popup is open
 static char g_call_name[64] = {};    // name input buffer
-static bool g_lang_thai     = true;  // language toggle: true=Thai, false=English
+enum Language { LANG_EN = 0, LANG_TH = 1, LANG_ID = 2, LANG_PINOY = 3 };
+static int g_language = LANG_EN;  // language: 0=English (default), 1=Thai, 2=Indonesian, 3=Filipino
 static ULONG_PTR g_gdiplus_token = 0;
 static int g_settings_tab   = 0;     // 0=voice, 1=players, 2=devices
 static char g_bg_status[128]  = "BG idle";
@@ -105,6 +106,7 @@ static UiTexture g_badge_connecting_tex;
 static UiTexture g_slider_left_tex;
 static UiTexture g_slider_right_tex;
 static UiTexture g_slider_knob_tex;
+static bool g_assets_loaded = false;
 
 static bool point_in_rect(ImVec2 p, ImVec2 min, ImVec2 max) {
     return p.x >= min.x && p.y >= min.y && p.x <= max.x && p.y <= max.y;
@@ -130,9 +132,12 @@ static void set_linear_sampler_callback(const ImDrawList*, const ImDrawCmd*) {
     g_ui_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 }
 
-// Pick Thai or English string at runtime
-static const char* L(const char* th, const char* en) {
-    return g_lang_thai ? th : en;
+// Pick language string at runtime
+static const char* L(const char* th, const char* en, const char* id, const char* pinoy) {
+    if (g_language == LANG_TH) return th;
+    if (g_language == LANG_ID) return id;
+    if (g_language == LANG_PINOY) return pinoy;
+    return en;  // Default to English
 }
 
 static void release_ui_texture(UiTexture& t) {
@@ -351,42 +356,40 @@ static bool load_png_texture_from_memory(LPDIRECT3DDEVICE9 device, const unsigne
 }
 
 static void ensure_ui_assets(LPDIRECT3DDEVICE9 device) {
-    if (!g_bg_tex.tex) {
-        load_png_texture_from_memory(device, kUiBackgroundBmp, kUiBackgroundBmpSize, g_bg_tex, g_bg_status, sizeof(g_bg_status));
-    }
-    if (!g_call_bg_tex.tex) {
-        load_png_texture_from_memory(device, kUiBackgroundCallPng, kUiBackgroundCallPngSize, g_call_bg_tex, g_bg_status, sizeof(g_bg_status));
-    }
-    if (!g_btn_tex.tex) load_png_texture_from_memory(device, kBtnSettingsPng, kBtnSettingsPngSize, g_btn_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_hover_tex.tex) load_png_texture_from_memory(device, kBtnSettingsHoverPng, kBtnSettingsHoverPngSize, g_btn_hover_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_lang_tex.tex) load_png_texture_from_memory(device, kBtnLangPng, kBtnLangPngSize, g_btn_lang_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_lang_hover_tex.tex) load_png_texture_from_memory(device, kBtnLangHoverPng, kBtnLangHoverPngSize, g_btn_lang_hover_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_exit_tex.tex) load_png_texture_from_memory(device, kBtnExitPng, kBtnExitPngSize, g_btn_exit_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_exit_hover_tex.tex) load_png_texture_from_memory(device, kBtnExitHoverPng, kBtnExitHoverPngSize, g_btn_exit_hover_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_ptt_key_tex.tex) load_png_texture_from_memory(device, kBtnPttKeyPng, kBtnPttKeyPngSize, g_btn_ptt_key_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_ptt_key_hover_tex.tex) load_png_texture_from_memory(device, kBtnPttKeyHoverPng, kBtnPttKeyHoverPngSize, g_btn_ptt_key_hover_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_call_tex.tex) load_png_texture_from_memory(device, kBtnCallPng, kBtnCallPngSize, g_btn_call_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_call_hover_tex.tex) load_png_texture_from_memory(device, kBtnCallHoverPng, kBtnCallHoverPngSize, g_btn_call_hover_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_whisper_call_bg_tex.tex) load_png_texture_from_memory(device, kUiBackgroundCallWPng, kUiBackgroundCallWPngSize, g_whisper_call_bg_tex, g_bg_status, sizeof(g_bg_status));
-    if (!g_btn_whisper_call_tex.tex) load_png_texture_from_memory(device, kBtnCallWPng, kBtnCallWPngSize, g_btn_whisper_call_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_whisper_call_hover_tex.tex) load_png_texture_from_memory(device, kBtnCallWHoverPng, kBtnCallWHoverPngSize, g_btn_whisper_call_hover_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_btn_dropdown_tex.tex) load_png_texture_from_memory(device, kBtnDropdownPng, kBtnDropdownPngSize, g_btn_dropdown_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_close_tex.tex) {
-        load_png_texture_from_memory(device, kBtnClose1Png, kBtnClose1PngSize, g_close_tex, g_btn_status, sizeof(g_btn_status));
-    }
-    if (!g_mic_off_tex.tex) load_png_texture_from_memory(device, kMicOffPng, kMicOffPngSize, g_mic_off_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_spk_off_tex.tex) load_png_texture_from_memory(device, kSpkOffPng, kSpkOffPngSize, g_spk_off_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_mic_on_tex.tex)  load_png_texture_from_memory(device, kMicOnPng,  kMicOnPngSize,  g_mic_on_tex,  g_btn_status, sizeof(g_btn_status));
-    if (!g_spk_on_tex.tex)  load_png_texture_from_memory(device, kSpkOnPng,  kSpkOnPngSize,  g_spk_on_tex,  g_btn_status, sizeof(g_btn_status));
-    if (!g_badge_idle_tex.tex) load_png_texture_from_memory(device, kBadgeIdlePng, kBadgeIdlePngSize, g_badge_idle_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_badge_talk_tex.tex) load_png_texture_from_memory(device, kBadgeTalkPng, kBadgeTalkPngSize, g_badge_talk_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_badge_mute_tex.tex) load_png_texture_from_memory(device, kBadgeMutePng, kBadgeMutePngSize, g_badge_mute_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_badge_spk_off_tex.tex) load_png_texture_from_memory(device, kBadgeSpeakerOffPng, kBadgeSpeakerOffPngSize, g_badge_spk_off_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_badge_mic_off_tex.tex) load_png_texture_from_memory(device, kBadgeMicOffPng, kBadgeMicOffPngSize, g_badge_mic_off_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_badge_connecting_tex.tex) load_png_texture_from_memory(device, kBadgeConnectingPng, kBadgeConnectingPngSize, g_badge_connecting_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_slider_left_tex.tex) load_png_texture_from_memory(device, kSliderLeftPng, kSliderLeftPngSize, g_slider_left_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_slider_right_tex.tex) load_png_texture_from_memory(device, kSliderRightPng, kSliderRightPngSize, g_slider_right_tex, g_btn_status, sizeof(g_btn_status));
-    if (!g_slider_knob_tex.tex) load_png_texture_from_memory(device, kSliderKnobPng, kSliderKnobPngSize, g_slider_knob_tex, g_btn_status, sizeof(g_btn_status));
+    if (g_assets_loaded) return;
+    
+    load_png_texture_from_memory(device, kUiBackgroundBmp, kUiBackgroundBmpSize, g_bg_tex, g_bg_status, sizeof(g_bg_status));
+    load_png_texture_from_memory(device, kUiBackgroundCallPng, kUiBackgroundCallPngSize, g_call_bg_tex, g_bg_status, sizeof(g_bg_status));
+    load_png_texture_from_memory(device, kBtnSettingsPng, kBtnSettingsPngSize, g_btn_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnSettingsHoverPng, kBtnSettingsHoverPngSize, g_btn_hover_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnLangPng, kBtnLangPngSize, g_btn_lang_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnLangHoverPng, kBtnLangHoverPngSize, g_btn_lang_hover_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnExitPng, kBtnExitPngSize, g_btn_exit_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnExitHoverPng, kBtnExitHoverPngSize, g_btn_exit_hover_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnPttKeyPng, kBtnPttKeyPngSize, g_btn_ptt_key_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnPttKeyHoverPng, kBtnPttKeyHoverPngSize, g_btn_ptt_key_hover_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnCallPng, kBtnCallPngSize, g_btn_call_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnCallHoverPng, kBtnCallHoverPngSize, g_btn_call_hover_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kUiBackgroundCallWPng, kUiBackgroundCallWPngSize, g_whisper_call_bg_tex, g_bg_status, sizeof(g_bg_status));
+    load_png_texture_from_memory(device, kBtnCallWPng, kBtnCallWPngSize, g_btn_whisper_call_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnCallWHoverPng, kBtnCallWHoverPngSize, g_btn_whisper_call_hover_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnDropdownPng, kBtnDropdownPngSize, g_btn_dropdown_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBtnClose1Png, kBtnClose1PngSize, g_close_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kMicOffPng, kMicOffPngSize, g_mic_off_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kSpkOffPng, kSpkOffPngSize, g_spk_off_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kMicOnPng, kMicOnPngSize, g_mic_on_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kSpkOnPng, kSpkOnPngSize, g_spk_on_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBadgeIdlePng, kBadgeIdlePngSize, g_badge_idle_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBadgeTalkPng, kBadgeTalkPngSize, g_badge_talk_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBadgeMutePng, kBadgeMutePngSize, g_badge_mute_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBadgeSpeakerOffPng, kBadgeSpeakerOffPngSize, g_badge_spk_off_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBadgeMicOffPng, kBadgeMicOffPngSize, g_badge_mic_off_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kBadgeConnectingPng, kBadgeConnectingPngSize, g_badge_connecting_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kSliderLeftPng, kSliderLeftPngSize, g_slider_left_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kSliderRightPng, kSliderRightPngSize, g_slider_right_tex, g_btn_status, sizeof(g_btn_status));
+    load_png_texture_from_memory(device, kSliderKnobPng, kSliderKnobPngSize, g_slider_knob_tex, g_btn_status, sizeof(g_btn_status));
+    
+    g_assets_loaded = true;
 }
 
 static bool textured_label_button(const char* id, const char* label, ImVec2 size,
@@ -911,7 +914,7 @@ void draw_settings_window() {
 
     char win_title[64];
     snprintf(win_title, sizeof(win_title), "%s###vc_settings",
-        L("\xe0\xb8\x95\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice Settings"));
+        L("\xe0\xb8\x95\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice Settings", "Pengaturan Suara", "Mga Setting ng Tunog"));
     bool open = true;
     if (!ImGui::Begin(win_title, &open, flags)) {
         ImGui::End();
@@ -944,7 +947,7 @@ void draw_settings_window() {
     const ImVec2 title_pos(win_pos.x + 16.f, win_pos.y + 1.f);
 
     dl->AddText(title_pos, IM_COL32(32, 44, 92, 255),
-        L("\xe0\xb8\x81\xe0\xb8\xb2\xe0\xb8\xa3\xe0\xb8\x95\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice Settings"));
+        L("\xe0\xb8\x81\xe0\xb8\xb2\xe0\xb8\xa3\xe0\xb8\x95\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice Settings", "Pengaturan Suara", "Mga Setting ng Tunog"));
 
     ImGui::SetCursorPos(ImVec2(win_w - 17.f, 3.f));
     ImGui::PushID("settings_close_top");
@@ -981,13 +984,14 @@ void draw_settings_window() {
                       IM_COL32(255, 255, 255, 255));
 
     ImGui::SetCursorPos(ImVec2(content_left, 30.f));
-    if (tab_button("##tab_voice", L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice"), ImVec2(46.f, 22.f), g_settings_tab == 0)) g_settings_tab = 0;
+    if (tab_button("##tab_voice", L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice", "Suara", "Tunog"), ImVec2(55.f, 22.f), g_settings_tab == 0)) g_settings_tab = 0;
     ImGui::SameLine(0.f, 4.f);
-    if (tab_button("##tab_players", L("\xe0\xb8\x9c\xe0\xb8\xb9\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb9\x88\xe0\xb8\x99", "Players"), ImVec2(54.f, 22.f), g_settings_tab == 1)) g_settings_tab = 1;
+    if (tab_button("##tab_players", L("\xe0\xb8\x9c\xe0\xb8\xb9\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb9\x88\xe0\xb8\x99", "Players", "Pemain", "Mga Manlalaro"), ImVec2(85.f, 22.f), g_settings_tab == 1)) g_settings_tab = 1;
     ImGui::SameLine(0.f, 4.f);
-    if (tab_button("##tab_devices", L("\xe0\xb8\xad\xe0\xb8\xb8\xe0\xb8\x9b\xe0\xb8\x81\xe0\xb8\xa3\xe0\xb8\x93\xe0\xb9\x8c", "Devices"), ImVec2(58.f, 22.f), g_settings_tab == 2)) g_settings_tab = 2;
+    if (tab_button("##tab_devices", L("\xe0\xb8\xad\xe0\xb8\xb8\xe0\xb8\x9b\xe0\xb8\x81\xe0\xb8\xa3\xe0\xb8\x93\xe0\xb9\x8c", "Devices", "Perangkat", "Mga Aparato"), ImVec2(85.f, 22.f), g_settings_tab == 2)) g_settings_tab = 2;
     ImGui::SetCursorPos(ImVec2(top_lang_x, top_lang_y));
-    if (lang_button("##lang_top", g_lang_thai ? "TH" : "EN", ImVec2(42.f, 24.f), false)) g_lang_thai = !g_lang_thai;
+    const char* lang_label = (g_language == LANG_TH) ? "TH" : (g_language == LANG_ID) ? "ID" : (g_language == LANG_PINOY) ? "PH" : "EN";
+    if (lang_button("##lang_top", lang_label, ImVec2(42.f, 24.f), false)) g_language = (g_language + 1) % 4;
 
     dl->AddLine(ImVec2(win_pos.x + section_line_left, win_pos.y + 51.f), ImVec2(win_pos.x + section_line_right, win_pos.y + 51.f), IM_COL32(30, 30, 30, 255), 1.0f);
 
@@ -1011,23 +1015,23 @@ void draw_settings_window() {
         }
 
         ImGui::SetCursorPos(ImVec2(content_left, 62.f));
-        ImGui::TextColored(hdr, L("\xe0\xb9\x82\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic Mode"));
+        ImGui::TextColored(hdr, L("\xe0\xb9\x82\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic Mode", "Mode Mikrofon", "Mode ng Mikropono"));
         dl->AddLine(ImVec2(win_pos.x + section_line_left, win_pos.y + 82.f), ImVec2(win_pos.x + section_line_right, win_pos.y + 82.f), IM_COL32(165, 170, 181, 255), 1.0f);
         const bool open_mic = vc.is_open_mic();
         ImGui::SetCursorPos(ImVec2(content_left, 90.f));
-        if (image_button_with_label("##btn_ptt_mode", L("\xe0\xb8\x81\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\x9e\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Push to Talk"), ImVec2(157.f, 24.f), !open_mic)) vc.set_open_mic(false);
+        if (image_button_with_label("##btn_ptt_mode", L("\xe0\xb8\x81\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\x9e\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Push to Talk", "Tekan untuk Bicara", "Itulak Upang Magsalita"), ImVec2(157.f, 24.f), !open_mic)) vc.set_open_mic(false);
         ImGui::SetCursorPos(ImVec2(190.f, 90.f));
-        if (image_button_with_label("##btn_open_mic_mode", L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Open Mic"), ImVec2(157.f, 24.f), open_mic)) vc.set_open_mic(true);
+        if (image_button_with_label("##btn_open_mic_mode", L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Open Mic", "Buka Mikrofon", "Buksan ang Mikropono"), ImVec2(157.f, 24.f), open_mic)) vc.set_open_mic(true);
 
         ImGui::SetCursorPos(ImVec2(content_left, 121.f));
-        ImGui::TextColored(hdr, L("\xe0\xb8\x9b\xe0\xb8\xb8\xe0\xb9\x88\xe0\xb8\xa1 PTT", "PTT Key"));
+        ImGui::TextColored(hdr, L("\xe0\xb8\x9b\xe0\xb8\xb8\xe0\xb9\x88\xe0\xb8\xa1 PTT", "PTT Key", "Tombol PTT", "Susi ng PTT"));
         dl->AddLine(ImVec2(win_pos.x + section_line_left, win_pos.y + 141.f), ImVec2(win_pos.x + section_line_right, win_pos.y + 141.f), IM_COL32(165, 170, 181, 255), 1.0f);
         std::string bind_label;
         if (g_binding_key) {
-            bind_label = L("\xe0\xb8\x81\xe0\xb8\x94\xe0\xb8\x9b\xe0\xb8\xb8\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x97\xe0\xb8\xb5\xe0\xb9\x88\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\x87\xe0\xb8\x81\xe0\xb8\xb2\xe0\xb8\xa3...", "Press a key...");
+            bind_label = L("\xe0\xb8\x81\xe0\xb8\x94\xe0\xb8\x9b\xe0\xb8\xb8\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x97\xe0\xb8\xb5\xe0\xb9\x88\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\x87\xe0\xb8\x81\xe0\xb8\xb2\xe0\xb8\xa3...", "Press a key...", "Tekan sebuah tombol...", "Pindutin ang isang susi...");
         } else {
             bind_label = "PTT: " + vk_name(vc.get_ptt_key()) + "  (" +
-                L("\xe0\xb8\x84\xe0\xb8\xa5\xe0\xb8\xb4\xe0\xb8\x81\xe0\xb9\x80\xe0\xb8\x9e\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xa5\xe0\xb8\xb5\xe0\xb9\x88\xe0\xb8\xa2\xe0\xb8\x99", "click to change") + ")";
+                L("\xe0\xb8\x84\xe0\xb8\xa5\xe0\xb8\xb4\xe0\xb8\x81\xe0\xb9\x80\xe0\xb8\x9e\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xa5\xe0\xb8\xb5\xe0\xb9\x88\xe0\xb8\xa2\xe0\xb8\x99", "click to change", "klik untuk ubah", "i-click upang baguhin") + ")";
         }
         ImGui::SetCursorPos(ImVec2(content_left, 150.f));
         if (ptt_key_button("##btn_bind_key", bind_label.c_str(), ImVec2(content_w, 24.f), g_binding_key) && !g_binding_key) {
@@ -1035,17 +1039,17 @@ void draw_settings_window() {
         }
 
         ImGui::SetCursorPos(ImVec2(content_left, 181.f));
-        ImGui::TextColored(hdr, L("\xe0\xb8\xa3\xe0\xb8\xb0\xe0\xb8\x94\xe0\xb8\xb1\xe0\xb8\x9a\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Volume"));
+        ImGui::TextColored(hdr, L("\xe0\xb8\xa3\xe0\xb8\xb0\xe0\xb8\x94\xe0\xb8\xb1\xe0\xb8\x9a\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Volume", "Volume", "Lakas ng Tunog"));
         dl->AddLine(ImVec2(win_pos.x + section_line_left, win_pos.y + 201.f), ImVec2(win_pos.x + section_line_right, win_pos.y + 201.f), IM_COL32(165, 170, 181, 255), 1.0f);
         ImGui::SetCursorPos(ImVec2(content_left, 211.f));
-        ImGui::TextColored(sub, L("\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic"));
+        ImGui::TextColored(sub, L("\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic", "Mikrofon", "Mikropono"));
         ImGui::SetCursorPos(ImVec2(content_left, 230.f));
         float mic_pct = vc.get_mic_gain() * 100.f;
         if (pretty_volume_slider("mic_voice", &mic_pct, 0.f, 100.f, ImVec2(content_w, 22.f)))
             vc.set_mic_gain(mic_pct / 100.f);
 
         ImGui::SetCursorPos(ImVec2(content_left, 261.f));
-        ImGui::TextColored(sub, L("\xe0\xb8\xa5\xe0\xb8\xb3\xe0\xb9\x82\xe0\xb8\x9e\xe0\xb8\x87", "Speaker"));
+        ImGui::TextColored(sub, L("\xe0\xb8\xa5\xe0\xb8\xb3\xe0\xb9\x82\xe0\xb8\x9e\xe0\xb8\x87", "Speaker", "Pengeras Suara", "Tagapagsalita"));
         ImGui::SetCursorPos(ImVec2(content_left, 280.f));
         float spk_pct = vc.get_speaker_gain() * 100.f;
         if (pretty_volume_slider("spk_voice", &spk_pct, 0.f, 100.f, ImVec2(content_w, 22.f)))
@@ -1070,8 +1074,8 @@ void draw_settings_window() {
                 if (!vc.is_player_muted(id)) { any_unmuted = true; break; }
             }
             const char* mute_all_lbl = any_unmuted
-                ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Mute All")
-                : L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Unmute All");
+                ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Mute All", "Diamkan Semua", "Tahimik Lahat")
+                : L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Unmute All", "Aktifkan Semua", "Buksan ang Lahat ng Tunog");
             if (ptt_key_button("##btn_mute_all", mute_all_lbl, ImVec2(avw, ptt_h), !any_unmuted)) {
                 for (uint32_t id : all_ids) {
                     if (any_unmuted) vc.mute_player(id); else vc.unmute_player(id);
@@ -1082,7 +1086,7 @@ void draw_settings_window() {
         }
 
         if (all_ids.empty()) {
-            ImGui::TextColored(sub, L("(\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\xb5\xe0\xb8\x9c\xe0\xb8\xb9\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb9\x88\xe0\xb8\x99\xe0\xb9\x83\xe0\xb8\x81\xe0\xb8\xa5\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\x84\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87)", "(no players nearby)"));
+            ImGui::TextColored(sub, L("(\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\xb5\xe0\xb8\x9c\xe0\xb8\xb9\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb9\x88\xe0\xb8\x99\xe0\xb9\x83\xe0\xb8\x81\xe0\xb8\xa5\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\x84\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87)", "(no players nearby)", "(tidak ada pemain di dekat)", "(walang mga manlalaro sa malapit)"));
         } else {
             const bool can_wsp = (vc.get_whisper_state() == VoiceClient::WhisperState::None);
             for (uint32_t id : all_ids) {
@@ -1096,11 +1100,11 @@ void draw_settings_window() {
 
                 ImGui::SameLine((std::max)(120.0f, avw - ex_w * 2.f - 4.f));
                 char w_id[32]; sprintf_s(w_id, "##w%u", id);
-                if (exit_button(w_id, L("\xe0\xb9\x82\xe0\xb8\x97\xe0\xb8\xa3", "Call"), ImVec2(ex_w, ex_h), false) && can_wsp) vc.whisper_request(id);
+                if (exit_button(w_id, L("\xe0\xb9\x82\xe0\xb8\x97\xe0\xb8\xa3", "Call", "Panggil", "Tawag"), ImVec2(ex_w, ex_h), false) && can_wsp) vc.whisper_request(id);
                 ImGui::SameLine(0, 4.f);
 
                 char m_id[32]; sprintf_s(m_id, "##m%u", id);
-                const char* m_lbl = is_muted ? L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Unmute") : L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Mute");
+                const char* m_lbl = is_muted ? L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Unmute", "Aktifkan", "Buksan ang Tunog") : L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Mute", "Diamkan", "Tahimik");
                 if (exit_button(m_id, m_lbl, ImVec2(ex_w, ex_h), is_muted)) {
                     if (is_muted) vc.unmute_player(id); else vc.mute_player(id);
                     g_player_cache.last_refresh = -1.0;
@@ -1113,14 +1117,14 @@ void draw_settings_window() {
         ImGui::BeginChild("##devices_tab_fixed", ImVec2(content_w, content_h), false, 0);
 
         float avw = ImGui::GetContentRegionAvail().x;
-        ImGui::TextColored(hdr, L("\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb9\x82\xe0\xb8\x84\xe0\xb8\xa3\xe0\xb9\x82\xe0\xb8\x9f\xe0\xb8\x99", "Microphone"));
+        ImGui::TextColored(hdr, L("\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb9\x82\xe0\xb8\x84\xe0\xb8\xa3\xe0\xb9\x82\xe0\xb8\x9f\xe0\xb8\x99", "Microphone", "Mikrofon", "Mikropono"));
         ImGui::Separator();
         ImGui::Spacing();
 
         const char* mic_preview = g_mic_devs.empty() ? "(none)"
             : (g_sel_mic >= 0 && g_sel_mic < (int)g_mic_devs.size()) ? g_mic_devs[g_sel_mic].name.c_str() : "Default";
         if (begin_device_combo("##mic_dev", mic_preview, avw)) {
-            if (ImGui::Selectable(L("\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\x99", "Default"), g_sel_mic == -1)) { g_sel_mic = -1; vc.set_mic_device(L""); }
+            if (ImGui::Selectable(L("\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\x99", "Default", "Bawaan", "Default"), g_sel_mic == -1)) { g_sel_mic = -1; vc.set_mic_device(L""); }
             for (int i = 0; i < (int)g_mic_devs.size(); i++) {
                 if (ImGui::Selectable(g_mic_devs[i].name.c_str(), g_sel_mic == i)) {
                     g_sel_mic = i;
@@ -1131,14 +1135,14 @@ void draw_settings_window() {
         }
 
         ImGui::Spacing();
-        ImGui::TextColored(hdr, L("\xe0\xb8\xa5\xe0\xb8\xb3\xe0\xb9\x82\xe0\xb8\x9e\xe0\xb8\x87", "Speaker"));
+        ImGui::TextColored(hdr, L("\xe0\xb8\xa5\xe0\xb8\xb3\xe0\xb9\x82\xe0\xb8\x9e\xe0\xb8\x87", "Speaker", "Pengeras Suara", "Tagapagsalita"));
         ImGui::Separator();
         ImGui::Spacing();
 
         const char* spk_preview = g_spk_devs.empty() ? "(none)"
             : (g_sel_spk >= 0 && g_sel_spk < (int)g_spk_devs.size()) ? g_spk_devs[g_sel_spk].name.c_str() : "Default";
         if (begin_device_combo("##spk_dev", spk_preview, avw)) {
-            if (ImGui::Selectable(L("\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\x99", "Default"), g_sel_spk == -1)) { g_sel_spk = -1; vc.set_speaker_device(L""); }
+            if (ImGui::Selectable(L("\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\x99", "Default", "Bawaan", "Default"), g_sel_spk == -1)) { g_sel_spk = -1; vc.set_speaker_device(L""); }
             for (int i = 0; i < (int)g_spk_devs.size(); i++) {
                 if (ImGui::Selectable(g_spk_devs[i].name.c_str(), g_sel_spk == i)) {
                     g_sel_spk = i;
@@ -1154,7 +1158,7 @@ void draw_settings_window() {
         const ImVec4 status_bg = ImVec4(0.16f, 0.18f, 0.22f, 0.92f);
         const ImVec4 status_border = ImVec4(0.34f, 0.38f, 0.46f, 0.90f);
         const ImVec4 status_text = ImVec4(0.96f, 0.96f, 0.98f, 1.0f);
-        ImGui::TextColored(hdr, L("\xe0\xb8\xaa\xe0\xb8\x96\xe0\xb8\xb2\xe0\xb8\x99\xe0\xb8\xb0\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic Status"));
+        ImGui::TextColored(hdr, L("\xe0\xb8\xaa\xe0\xb8\x96\xe0\xb8\xb2\xe0\xb8\x99\xe0\xb8\xb0\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic Status", "Status Mikrofon", "Estado ng Mikropono"));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, status_bg);
         ImGui::PushStyleColor(ImGuiCol_Border, status_border);
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.f);
@@ -1172,12 +1176,12 @@ void draw_settings_window() {
         else if (!vc.is_locally_talking()) dot_col = IM_COL32(185, 190, 205, 255);
         sdl->AddCircleFilled(ImVec2(chip_pos.x + 10.f, dot_y), 5.f, dot_col);
         ImGui::SetCursorPos(ImVec2(20.f, 2.f));
-        const char* device_status = !vc.is_connected() ? L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb9\x80\xe0\xb8\x8a\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x88\xe0\xb8\xad", "Connecting")
-    : (vc.is_muted() && vc.is_deafened()) ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Muted")
-    : vc.is_muted() ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic Off")
-    : vc.is_deafened() ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Speaker Off")
-    : vc.is_locally_talking() ? L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking")
-    : L("\xe0\xb8\x9e\xe0\xb8\xa3\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\xa1", "Ready");
+        const char* device_status = !vc.is_connected() ? L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb9\x80\xe0\xb8\x8a\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x88\xe0\xb8\xad", "Connecting", "Menghubungkan", "Kumokonekta")
+    : (vc.is_muted() && vc.is_deafened()) ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Muted", "Diamkan", "Natahimik")
+    : vc.is_muted() ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic Off", "Mikrofon Mati", "Mikropono Naka-off")
+    : vc.is_deafened() ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Speaker Off", "Pengeras Mati", "Tagapagsalita Naka-off")
+    : vc.is_locally_talking() ? L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking", "Berbicara", "Nagsasalita")
+    : L("\xe0\xb8\x9e\xe0\xb8\xa3\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\xa1", "Ready", "Siap", "Handa");
         ImGui::TextColored(status_text, "%s", device_status);
         const ImVec2 track_p0(chip_pos.x + 20.f, chip_pos.y + chip_size.y - 9.f);
         const ImVec2 track_p1(chip_pos.x + chip_size.x - 10.f, chip_pos.y + chip_size.y - 5.f);
@@ -1193,7 +1197,7 @@ void draw_settings_window() {
     }
 
     ImGui::SetCursorPos(ImVec2(footer_close_x, footer_y));
-    if (exit_button("##settings_close_footer", L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Close"), ImVec2(42.f, 24.f))) close_settings();
+    if (exit_button("##settings_close_footer", L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Close", "Tutup", "Isara"), ImVec2(42.f, 24.f))) close_settings();
 
     ImGui::End();
     pop_ro_style();
@@ -1268,10 +1272,10 @@ void draw_call_popup() {
     }
 
     ImGui::SetCursorPos(ImVec2(content_left + 6.f, 2.f));
-    ImGui::TextColored(hdr, L("\xe0\xb9\x82\xe0\xb8\x97\xe0\xb8\xa3\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice Call"));
+    ImGui::TextColored(hdr, L("\xe0\xb9\x82\xe0\xb8\x97\xe0\xb8\xa3\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice Call", "Panggilan Suara", "Tawag sa Tunog"));
 
     ImGui::SetCursorPos(ImVec2(content_left, 28.f));
-    ImGui::TextColored(hdr, L("\xe0\xb8\x81\xe0\xb8\xa3\xe0\xb8\xad\xe0\xb8\x81\xe0\xb8\x8a\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb8\x95\xe0\xb8\xb1\xe0\xb8\xa7\xe0\xb8\xa5\xe0\xb8\xb0\xe0\xb8\x84\xe0\xb8\xa3", "Character name"));
+    ImGui::TextColored(hdr, L("\xe0\xb8\x81\xe0\xb8\xa3\xe0\xb8\xad\xe0\xb8\x81\xe0\xb8\x8a\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb8\x95\xe0\xb8\xb1\xe0\xb8\xa7\xe0\xb8\xa5\xe0\xb8\xb0\xe0\xb8\x84\xe0\xb8\xa3", "Character name", "Nama karakter", "Pangalan ng Karakter"));
 
     ImGui::SetCursorPos(ImVec2(content_left, 48.f));
     ImGui::SetNextItemWidth(content_w);
@@ -1290,7 +1294,7 @@ void draw_call_popup() {
     const float bw = content_w;
     ImGui::SetCursorPos(ImVec2(content_left, 84.f));
     if (!busy) {
-        bool call_clicked = call_button("##call_btn", L("\xe0\xb9\x82\xe0\xb8\x97\xe0\xb8\xa3", "Call"), ImVec2(bw, 26.f)) || enter_pressed;
+        bool call_clicked = call_button("##call_btn", L("\xe0\xb9\x82\xe0\xb8\x97\xe0\xb8\xa3", "Call", "Panggil", "Tawag"), ImVec2(bw, 26.f)) || enter_pressed;
 
         if (call_clicked && g_call_name[0] != '\0') {
             vc.whisper_lookup(g_call_name);
@@ -1298,12 +1302,12 @@ void draw_call_popup() {
         }
     } else {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.35f, 0.40f, 0.7f));
-        ImGui::Button(L("\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb9\x88\xe0\xb8\xa7\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb8\x87", "Busy"), ImVec2(bw, 26.f));
+        ImGui::Button(L("\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb9\x88\xe0\xb8\xa7\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb8\x87", "Busy", "Sibuk", "Abala"), ImVec2(bw, 26.f));
         ImGui::PopStyleColor();
     }
 
     ImGui::SetCursorPos(ImVec2(win_w - 53.f, win_h - 26.f));
-    if (exit_button("##call_close_footer", L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Close"), ImVec2(42.f, 24.f))) {
+    if (exit_button("##call_close_footer", L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Close", "Tutup", "Isara"), ImVec2(42.f, 24.f))) {
         g_call_popup = false;
     }
 
@@ -1372,7 +1376,7 @@ void draw_whisper_popup() {
     if (remain < 0) remain = 0;
     char cd[12]; sprintf_s(cd, "(%ds)", remain);
 
-    const char* incoming_label = L("\xe0\xb8\xaa\xe0\xb8\xb2\xe0\xb8\xa2\xe0\xb9\x80\xe0\xb8\x82\xe0\xb9\x89\xe0\xb8\xb2", "Incoming call");
+    const char* incoming_label = L("\xe0\xb8\xaa\xe0\xb8\xb2\xe0\xb8\xa2\xe0\xb9\x80\xe0\xb8\x82\xe0\xb9\x89\xe0\xb8\xb2", "Incoming call", "Incoming call", "Papasok na Tawag");
     dl->AddText(ImVec2(win_pos.x + 15.f, win_pos.y + 2.f), IM_COL32(38, 54, 96, 255), incoming_label);
     const ImVec2 cd_sz = ImGui::CalcTextSize(cd);
     dl->AddText(ImVec2(win_pos.x + win_w - cd_sz.x - 8.f, win_pos.y + 2.f), IM_COL32(92, 92, 92, 255), cd);
@@ -1388,11 +1392,11 @@ void draw_whisper_popup() {
 
     const float btn_y = 54.f;
     ImGui::SetCursorPos(ImVec2(7.f, btn_y));
-    if (whisper_call_button("##wsp_accept", L("\xe0\xb8\xa3\xe0\xb8\xb1\xe0\xb8\x9a", "Accept"), ImVec2(60.f, 24.f)))
+    if (whisper_call_button("##wsp_accept", L("\xe0\xb8\xa3\xe0\xb8\xb1\xe0\xb8\x9a", "Accept", "Terima", "Tanggapin"), ImVec2(60.f, 24.f)))
         vc.whisper_accept();
 
     ImGui::SetCursorPos(ImVec2(69.f, btn_y));
-    if (whisper_call_button("##wsp_decline", L("\xe0\xb8\x9b\xe0\xb8\x8f\xe0\xb8\xb4\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\x98", "Decline"), ImVec2(60.f, 24.f)))
+    if (whisper_call_button("##wsp_decline", L("\xe0\xb8\x9b\xe0\xb8\x8f\xe0\xb8\xb4\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\x98", "Decline", "Tolak", "Tanggihan"), ImVec2(60.f, 24.f)))
         vc.whisper_reject();
 
     ImGui::End();
@@ -1514,8 +1518,8 @@ void draw_voicebar_call_window() {
         }
         ImGui::SameLine(0, 8.f);
         const char* end_lbl = (ws2 == VoiceClient::WhisperState::Calling)
-            ? L("\xe0\xb8\xa2\xe0\xb8\x81\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb8\xb4\xe0\xb8\x81", "Cancel")
-            : L("\xe0\xb8\xa7\xe0\xb8\xb2\xe0\xb8\x87\xe0\xb8\xaa\xe0\xb8\xb2\xe0\xb8\xa2", "Hang up");
+            ? L("\xe0\xb8\xa2\xe0\xb8\x81\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb8\xb4\xe0\xb8\x81", "Cancel", "Batal", "Kanselahin")
+            : L("\xe0\xb8\xa7\xe0\xb8\xb2\xe0\xb8\x87\xe0\xb8\xaa\xe0\xb8\xb2\xe0\xb8\xa2", "Hang up", "Tutup panggilan", "Itigil ang Tawag");
         ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.58f, 0.12f, 0.12f, 1.f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.74f, 0.18f, 0.18f, 1.f));
         ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.f,   1.f,   1.f,   1.f));
@@ -1525,10 +1529,10 @@ void draw_voicebar_call_window() {
     } else {
         struct ChTab { const char* label; Channel ch; };
         ChTab tabs[4] = {
-            { L("\xe0\xb8\x9b\xe0\xb8\x81\xe0\xb8\x95\xe0\xb8\xb4",            "Normal"), Channel::Normal },
-            { L("\xe0\xb8\x9b\xe0\xb8\xb2\xe0\xb8\xa3\xe0\xb9\x8c\xe0\xb8\x95\xe0\xb8\xb5\xe0\xb9\x89", "Party"),  Channel::Party  },
-            { L("\xe0\xb8\x81\xe0\xb8\xb4\xe0\xb8\xa5\xe0\xb8\x94\xe0\xb9\x8c", "Guild"),  Channel::Guild  },
-            { L("\xe0\xb8\xab\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\x87",             "Room"),   Channel::Room   },
+            { L("\xe0\xb8\x9b\xe0\xb8\x81\xe0\xb8\x95\xe0\xb8\xb4", "Normal", "Normal", "Normal"), Channel::Normal },
+            { L("\xe0\xb8\x9b\xe0\xb8\xb2\xe0\xb8\xa3\xe0\xb9\x8c\xe0\xb8\x95\xe0\xb8\xb5\xe0\xb9\x89", "Party", "Pesta", "Party"),  Channel::Party  },
+            { L("\xe0\xb8\x81\xe0\xb8\xb4\xe0\xb8\xa5\xe0\xb8\x94\xe0\xb9\x8c", "Guild", "Guild", "Guild"),  Channel::Guild  },
+            { L("\xe0\xb8\xab\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\x87", "Room", "Ruangan", "Kwarto"),   Channel::Room   },
         };
         for (int i = 0; i < 4; i++) {
             bool sel = (ch == tabs[i].ch);
@@ -1581,11 +1585,11 @@ void draw_voicebar_call_window() {
                      ImVec2(badge_w, badge_h),
                      ImVec2(0.f, 0.f), ImVec2(state_tex->u1, state_tex->v1));
         if (ImGui::IsItemHovered()) {
-            const char* status = L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice");
-            if (!connected) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline");
-            else if (deafened) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\xab\xe0\xb8\xb9", "Deafened");
-            else if (muted) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Muted");
-            else if (ptt) status = L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking");
+            const char* status = L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice", "Suara", "Tunog");
+            if (!connected) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline", "Offline", "Offline");
+            else if (deafened) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\xab\xe0\xb8\xb9", "Deafened", "Tuli", "Binungaran");
+            else if (muted) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Muted", "Diamkan", "Natahimik");
+            else if (ptt) status = L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking", "Berbicara", "Nagsasalita");
             ImGui::SetTooltip("%s", status);
         }
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
@@ -1719,11 +1723,11 @@ void draw_voice_window() {
     }
 
     if (badge_hovered) {
-        const char* status = L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice");
-        if (!connected) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline");
-        else if (deafened) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\xab\xe0\xb8\xb9", "Deafened");
-        else if (muted) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Muted");
-        else if (ptt) status = L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking");
+        const char* status = L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice", "Suara", "Tunog");
+        if (!connected) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline", "Offline", "Offline");
+        else if (deafened) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\xab\xe0\xb8\xb9", "Deafened", "Tuli", "Binungaran");
+        else if (muted) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Muted", "Diamkan", "Natahimik");
+        else if (ptt) status = L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking", "Berbicara", "Nagsasalita");
         ImGui::SetTooltip("%s", status);
     }
 
@@ -1755,10 +1759,10 @@ void draw_voice_window() {
 
     struct ChTab { const char* label; Channel ch; };
     ChTab tabs[4] = {
-        { L("\xe0\xb8\x9b\xe0\xb8\x81\xe0\xb8\x95\xe0\xb8\xb4",            "Normal"), Channel::Normal },
-        { L("\xe0\xb8\x9b\xe0\xb8\xb2\xe0\xb8\xa3\xe0\xb9\x8c\xe0\xb8\x95\xe0\xb8\xb5\xe0\xb9\x89", "Party"),  Channel::Party  },
-        { L("\xe0\xb8\x81\xe0\xb8\xb4\xe0\xb8\xa5\xe0\xb8\x94\xe0\xb9\x8c", "Guild"),  Channel::Guild  },
-        { L("\xe0\xb8\xab\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\x87",             "Room"),   Channel::Room   },
+        { L("\xe0\xb8\x9b\xe0\xb8\x81\xe0\xb8\x95\xe0\xb8\xb4", "Normal", "Normal", "Normal"), Channel::Normal },
+        { L("\xe0\xb8\x9b\xe0\xb8\xb2\xe0\xb8\xa3\xe0\xb9\x8c\xe0\xb8\x95\xe0\xb8\xb5\xe0\xb9\x89", "Party", "Pesta", "Party"),  Channel::Party  },
+        { L("\xe0\xb8\x81\xe0\xb8\xb4\xe0\xb8\xa5\xe0\xb8\x94\xe0\xb9\x8c", "Guild", "Guild", "Guild"),  Channel::Guild  },
+        { L("\xe0\xb8\xab\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\x87", "Room", "Ruangan", "Kwarto"),   Channel::Room   },
     };
 
     auto ws2 = vc.get_whisper_state();
@@ -1804,8 +1808,8 @@ void draw_voice_window() {
         }
         ImGui::SameLine(0, 8.f);
         const char* end_lbl = (ws2 == VoiceClient::WhisperState::Calling)
-            ? L("\xe0\xb8\xa2\xe0\xb8\x81\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb8\xb4\xe0\xb8\x81", "Cancel")
-            : L("\xe0\xb8\xa7\xe0\xb8\xb2\xe0\xb8\x87\xe0\xb8\xaa\xe0\xb8\xb2\xe0\xb8\xa2", "Hang up");
+            ? L("\xe0\xb8\xa2\xe0\xb8\x81\xe0\xb9\x80\xe0\xb8\xa5\xe0\xb8\xb4\xe0\xb8\x81", "Cancel", "Batal", "Kanselahin")
+            : L("\xe0\xb8\xa7\xe0\xb8\xb2\xe0\xb8\x87\xe0\xb8\xaa\xe0\xb8\xb2\xe0\xb8\xa2", "Hang up", "Tutup panggilan", "Itigil ang Tawag");
         ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.58f, 0.12f, 0.12f, 1.f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.74f, 0.18f, 0.18f, 1.f));
         ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.f,   1.f,   1.f,   1.f));
@@ -2013,6 +2017,39 @@ void shutdown() {
 
 void on_reset_before() {
     if (g_imgui_inited) ImGui_ImplDX9_InvalidateDeviceObjects();
+
+    g_assets_loaded = false;
+
+    release_ui_texture(g_bg_tex);
+    release_ui_texture(g_call_bg_tex);
+    release_ui_texture(g_btn_tex);
+    release_ui_texture(g_btn_hover_tex);
+    release_ui_texture(g_btn_lang_tex);
+    release_ui_texture(g_btn_lang_hover_tex);
+    release_ui_texture(g_btn_exit_tex);
+    release_ui_texture(g_btn_exit_hover_tex);
+    release_ui_texture(g_btn_ptt_key_tex);
+    release_ui_texture(g_btn_ptt_key_hover_tex);
+    release_ui_texture(g_btn_call_tex);
+    release_ui_texture(g_btn_call_hover_tex);
+    release_ui_texture(g_whisper_call_bg_tex);
+    release_ui_texture(g_btn_whisper_call_tex);
+    release_ui_texture(g_btn_whisper_call_hover_tex);
+    release_ui_texture(g_btn_dropdown_tex);
+    release_ui_texture(g_close_tex);
+    release_ui_texture(g_mic_off_tex);
+    release_ui_texture(g_spk_off_tex);
+    release_ui_texture(g_mic_on_tex);
+    release_ui_texture(g_spk_on_tex);
+    release_ui_texture(g_badge_idle_tex);
+    release_ui_texture(g_badge_talk_tex);
+    release_ui_texture(g_badge_mute_tex);
+    release_ui_texture(g_badge_spk_off_tex);
+    release_ui_texture(g_badge_mic_off_tex);
+    release_ui_texture(g_badge_connecting_tex);
+    release_ui_texture(g_slider_left_tex);
+    release_ui_texture(g_slider_right_tex);
+    release_ui_texture(g_slider_knob_tex);
 }
 
 void on_reset_after(LPDIRECT3DDEVICE9 pDevice) {
@@ -2026,11 +2063,19 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
         if (!init(pDevice)) return;
     }
 
+    DWORD frame_start = GetTickCount();
+    
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
     auto& vc = VoiceClient::get();
+    DWORD after_vc_get = GetTickCount();
+    if (after_vc_get - frame_start > 5) {
+        char b[64]; sprintf_s(b, "[PERF] VoiceClient::get() took %lu ms", after_vc_get - frame_start);
+        dbglog(b);
+    }
+    
     bool in_game = vc.is_in_game();
     bool on_map = vc.is_on_map();
     if (!on_map) {

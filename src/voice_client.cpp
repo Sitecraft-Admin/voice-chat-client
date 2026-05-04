@@ -1001,9 +1001,13 @@ void VoiceClient::position_loop() {
         }
 
         try {
-            // Read memory before syncing PTT so char-select/loading screens
-            // cannot keep the old character's server-side TX state open.
+            DWORD mem_start = GetTickCount();
             auto state = MemoryReader::read();
+            DWORD mem_end = GetTickCount();
+            if (mem_end - mem_start > 10) {
+                char b[64]; sprintf_s(b, "[PERF] MemoryReader::read() took %lu ms", mem_end - mem_start);
+                dbglog(b);
+            }
             // Position comes from Map Server via UDP — only AID + CID needed.
             // on_map = auth_ready (account_id > 0 && char_id > 0).
             // MAP_NAME / CHAR_X / CHAR_Y offsets are optional (overlay/debug only).
