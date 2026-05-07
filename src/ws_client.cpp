@@ -225,6 +225,17 @@ void WsClient::recv_loop() {
     }
 
     if (connected_.exchange(false)) {
+        SOCKET to_close = INVALID_SOCKET;
+        {
+            std::lock_guard<std::mutex> lock(socket_mtx_);
+            to_close = socket_;
+            socket_ = INVALID_SOCKET;
+        }
+        if (to_close != INVALID_SOCKET) {
+            shutdown(to_close, SD_BOTH);
+            closesocket(to_close);
+        }
+        queue_cv_.notify_all();
         if (on_close)
             on_close();
     }
@@ -305,10 +316,19 @@ void WsClient::disconnect() {
     }
     queue_cv_.notify_all();
 
-    if (recv_thread_.joinable())
-        recv_thread_.join();
-    if (send_thread_.joinable())
-        send_thread_.join();
+    const auto self_id = std::this_thread::get_id();
+    if (recv_thread_.joinable()) {
+        if (recv_thread_.get_id() == self_id)
+            recv_thread_.detach();
+        else
+            recv_thread_.join();
+    }
+    if (send_thread_.joinable()) {
+        if (send_thread_.get_id() == self_id)
+            send_thread_.detach();
+        else
+            send_thread_.join();
+    }
 
     if (s != INVALID_SOCKET)
         closesocket(s);

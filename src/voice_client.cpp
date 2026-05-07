@@ -550,7 +550,9 @@ void VoiceClient::connect_to_server() {
 
     auth_sent_      = false;
     auth_confirmed_ = false;
-    try_send_auth();
+    // position_loop sends auth after AID/CID are stable for a few ticks.
+    // Fast enter/exit can expose a transient char_id that the voice server
+    // then has to clean up as a half-open map session.
 }
 
 void VoiceClient::try_send_auth() {
@@ -976,9 +978,12 @@ void VoiceClient::position_loop() {
         dbglog(b);
     }
 
-    int auth_wait_counter = 0;
     bool last_ptt = false;
     DWORD last_ping_tick = 0;
+    int stable_account_id = 0;
+    int stable_char_id = 0;
+    int stable_auth_ticks = 0;
+    constexpr int kAuthStableTicks = 5; // about 165 ms at the 33 ms loop cadence
 
     while (running_) {
         Sleep(33);
@@ -1017,6 +1022,21 @@ void VoiceClient::position_loop() {
                 set_ptt(ptt);
             }
 
+            if (!on_map) {
+                stable_account_id = 0;
+                stable_char_id = 0;
+                stable_auth_ticks = 0;
+
+                if (ws_.is_connected() && (auth_sent_.load() || auth_confirmed_.load())) {
+                    dbglog("[auth] lost map state - closing voice session");
+                    auth_sent_ = false;
+                    auth_confirmed_ = false;
+                    ws_.disconnect();
+                    on_ws_closed();
+                }
+                continue;
+            }
+
             // Keep in_map_ current even while disconnected.
             // This makes is_in_game() return false during char select (map="")
             // immediately — no need to wait for the server to close the connection.
@@ -1040,16 +1060,13 @@ void VoiceClient::position_loop() {
                 }
             }
 
-            if (!state.auth_ready) {
-                if ((++auth_wait_counter % 100) == 0) {
-                    char b[256];
-                    sprintf_s(b, "[auth] still not ready acc=%d char=%d",
-                        state.account_id,
-                        state.char_id);
-                    dbglog(b);
-                }
-                continue;
+            if (state.account_id != stable_account_id || state.char_id != stable_char_id) {
+                stable_account_id = state.account_id;
+                stable_char_id = state.char_id;
+                stable_auth_ticks = 0;
             }
+            if (stable_auth_ticks < kAuthStableTicks)
+                ++stable_auth_ticks;
 
             // Detect character switch.
             //
@@ -1076,7 +1093,7 @@ void VoiceClient::position_loop() {
                 auth_confirmed_ = false;
             }
 
-            if (!auth_sent_)
+            if (!auth_sent_ && stable_auth_ticks >= kAuthStableTicks)
                 try_send_auth();
             if (!auth_sent_)
                 continue;
