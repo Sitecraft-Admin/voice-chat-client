@@ -1214,7 +1214,17 @@ void draw_settings_window() {
         sdl->AddRectFilled(track_p0, track_p1, IM_COL32(82, 88, 104, 210), 2.f);
         if (meter > 0.001f) {
             const float fill_x = track_p0.x + (track_p1.x - track_p0.x) * meter;
-            sdl->AddRectFilled(track_p0, ImVec2(fill_x, track_p1.y), IM_COL32(255, 210, 40, 255), 2.f);
+            // Gradient left→right: green → yellow → red based on level
+            const ImU32 col_l = IM_COL32(80, 200, 80, 255);
+            ImU32 col_r;
+            if (meter < 0.6f) {
+                const float t = meter / 0.6f;
+                col_r = IM_COL32((int)(80 + t * 175), (int)(200 - t * 10), 0, 255);
+            } else {
+                const float t = (meter - 0.6f) / 0.4f;
+                col_r = IM_COL32(255, (int)(190 * (1.f - t) + 60 * t), 0, 255);
+            }
+            sdl->AddRectFilledMultiColor(track_p0, ImVec2(fill_x, track_p1.y), col_l, col_r, col_r, col_l);
         }
         ImGui::EndChild();
         ImGui::PopStyleVar(3);
