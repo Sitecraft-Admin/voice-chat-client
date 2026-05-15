@@ -81,6 +81,8 @@ public:
     std::vector<AudioDeviceInfo> get_speaker_devices() { return enumerate_audio_devices(false); }
     void set_mic_device(const std::wstring& id)     { capture_.set_device(id); }
     void set_speaker_device(const std::wstring& id) { playback_.set_device(id); }
+    std::wstring get_mic_device_id()     const { return capture_.get_device(); }
+    std::wstring get_speaker_device_id() const { return playback_.get_device(); }
 
     // Returns char_ids that sent audio within the last 800 ms
     std::vector<uint32_t> get_active_speakers();

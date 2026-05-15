@@ -911,8 +911,14 @@ void draw_settings_window() {
     if (!g_devs_loaded) {
         g_mic_devs = vc.get_mic_devices();
         g_spk_devs = vc.get_speaker_devices();
-        g_sel_mic = 0;
-        g_sel_spk = 0;
+        const std::wstring cur_mic = vc.get_mic_device_id();
+        const std::wstring cur_spk = vc.get_speaker_device_id();
+        g_sel_mic = -1;
+        for (int i = 0; i < (int)g_mic_devs.size(); i++)
+            if (g_mic_devs[i].id == cur_mic) { g_sel_mic = i; break; }
+        g_sel_spk = -1;
+        for (int i = 0; i < (int)g_spk_devs.size(); i++)
+            if (g_spk_devs[i].id == cur_spk) { g_sel_spk = i; break; }
         g_devs_loaded = true;
     }
 
