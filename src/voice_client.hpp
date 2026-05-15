@@ -57,6 +57,7 @@ public:
     bool        is_deafened()   const { return deafened_.load(); }
     bool        is_war_mode()   const { return war_mode_.load(); }
     int         get_war_recommended_channel() const { return war_recommended_channel_.load(); }
+    int         get_current_room_id() const { return current_room_id_.load(); }
     void        set_deafen(bool v);
     int         get_ptt_key()   const { return ptt_key_.load(); }
     void        set_ptt_key(int vk)   { ptt_key_.store(vk); }
@@ -188,6 +189,7 @@ private:
     std::atomic<bool> muted_before_deafen_{ false };
     std::atomic<bool> war_mode_{ false };
     std::atomic<int>  war_recommended_channel_{ 0 };
+    std::atomic<int>  current_room_id_{ 0 };    // non-zero while in a chatroom
     std::atomic<bool> reset_mic_pipeline_{ false };
     std::atomic<int> ptt_key_{ 'V' };   // default PTT key
     std::atomic<float> mic_rms_{ 0.0f };

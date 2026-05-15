@@ -683,6 +683,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
     else if (type == "room_joined") {
         int room_id = j.value("room_id", 0);
         if (room_id > 0) {
+            current_room_id_.store(room_id);
             int prev_channel = 0;
             {
                 std::lock_guard<std::mutex> lk(state_mtx_);
@@ -696,6 +697,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         }
     }
     else if (type == "room_left") {
+        current_room_id_.store(0);
         int restored_channel = -1;
         {
             std::lock_guard<std::mutex> lk(state_mtx_);
@@ -1361,10 +1363,14 @@ void VoiceClient::set_deafen(bool v) {
 
 void VoiceClient::set_channel(Channel ch) {
     // Room is server-controlled (assigned via map server chat_join/chat_leave).
-    // Reject manual Room switches — caller must wait for room_joined event.
+    // Allow manual switch back to Room only if the player is currently in a room
+    // (current_room_id_ != 0 means the server sent room_joined and we haven't
+    // received room_left yet — so the server still has us in the room).
     if (ch == Channel::Room) {
-        dbglog("[chan] ignoring manual set_channel(Room) — server-controlled");
-        return;
+        if (current_room_id_.load() == 0) {
+            dbglog("[chan] ignoring manual set_channel(Room) — not in a room");
+            return;
+        }
     }
     if (war_mode_.load() && (ch == Channel::Normal || ch == Channel::Room)) {
         set_whisper_notice("War Mode");

@@ -1570,9 +1570,10 @@ void draw_voicebar_call_window() {
             { L("\xe0\xb8\x81\xe0\xb8\xb4\xe0\xb8\xa5\xe0\xb8\x94\xe0\xb9\x8c", "Guild"),  Channel::Guild  },
             { L("\xe0\xb8\xab\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\x87",             "Room"),   Channel::Room   },
         };
+        const bool in_room = (vc.get_current_room_id() != 0);
         for (int i = 0; i < 4; i++) {
             bool sel = (ch == tabs[i].ch);
-            const bool room_unavail = (tabs[i].ch == Channel::Room) && (ch != Channel::Room);
+            const bool room_unavail = (tabs[i].ch == Channel::Room) && !in_room;
             const bool blocked = room_unavail
                               || (war_mode && (tabs[i].ch == Channel::Normal || tabs[i].ch == Channel::Room));
             ImGui::PushStyleColor(ImGuiCol_Button,
@@ -1853,11 +1854,13 @@ void draw_voice_window() {
             vc.whisper_end();
         ImGui::PopStyleColor(3);
     } else {
+        const bool in_room = (vc.get_current_room_id() != 0);
         for (int i = 0; i < 4; i++) {
             bool sel = (ch == tabs[i].ch);
-            // Room is assigned by the map server (chat_join/chat_leave) — the player
-            // cannot manually enter a room.  Disable the button unless already in one.
-            const bool room_unavail = (tabs[i].ch == Channel::Room) && (ch != Channel::Room);
+            // Room is assigned by the map server (chat_join/chat_leave).
+            // Allow manual switch back to Room as long as in_room is true
+            // (server sent room_joined and hasn't sent room_left yet).
+            const bool room_unavail = (tabs[i].ch == Channel::Room) && !in_room;
             const bool blocked = room_unavail
                               || (war_mode && (tabs[i].ch == Channel::Normal || tabs[i].ch == Channel::Room));
             ImGui::PushStyleColor(ImGuiCol_Button,
