@@ -15,10 +15,14 @@ using json = nlohmann::json;
 
 static uint64_t g_voice_session_id = 0;
 static uint64_t make_session_id() {
-    ULONGLONG t = GetTickCount64();
-    uint64_t pid = static_cast<uint64_t>(GetCurrentProcessId());
-    uint64_t tid = static_cast<uint64_t>(GetCurrentThreadId());
-    return (static_cast<uint64_t>(t) << 16) ^ (pid << 32) ^ tid;
+    using RtlGenRandom_t = BOOLEAN(WINAPI*)(PVOID, ULONG);
+    static const auto fn = reinterpret_cast<RtlGenRandom_t>(
+        GetProcAddress(GetModuleHandleA("advapi32.dll"), "SystemFunction036"));
+    uint64_t id = 0;
+    if (fn && fn(&id, sizeof(id)) && id != 0)
+        return id;
+    // fallback: mix observable values if CSPRNG unavailable (should not happen)
+    return GetTickCount64() ^ (static_cast<uint64_t>(GetCurrentProcessId()) << 32);
 }
 
 static std::string map_session_ended_text() {

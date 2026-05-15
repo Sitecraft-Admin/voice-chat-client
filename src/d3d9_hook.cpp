@@ -2,6 +2,7 @@
 #include "overlay.hpp"
 #include "dbglog.hpp"
 #include <Windows.h>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -21,7 +22,7 @@ static EndScene_t oEndScene = nullptr;
 static Present_t  oPresent  = nullptr;
 static Reset_t    oReset    = nullptr;
 
-static bool g_installed   = false;
+static std::atomic<bool> g_installed{ false };
 static LPDIRECT3DDEVICE9 g_game_device = nullptr;
 static void** g_game_vtable = nullptr; // saved for uninstall / device replacement
 
@@ -184,7 +185,7 @@ HRESULT APIENTRY hkEndSceneTemp(LPDIRECT3DDEVICE9 pDevice) {
     patch_game_vtable(vt);
     dbglog("[D3D9Hook] vtable patched on game device");
 
-    g_installed = true;
+    g_installed.store(true, std::memory_order_release);
 
     // 5. Call original EndScene directly (bytes restored, safe to call)
     return oEndScene(pDevice);
@@ -256,12 +257,15 @@ void D3D9Hook::uninstall() {
 
     restore_game_vtable();
 
+    // Stop render hooks from entering do_frame before device is released.
+    g_installed.store(false, std::memory_order_release);
+
     Overlay::shutdown();
-    if (g_game_device)
+    if (g_game_device) {
         g_game_device->Release();
-    g_installed   = false;
-    g_game_device = nullptr;
+        g_game_device = nullptr;
+    }
     dbglog("[D3D9Hook] uninstalled");
 }
 
-bool D3D9Hook::is_installed() { return g_installed; }
+bool D3D9Hook::is_installed() { return g_installed.load(); }
