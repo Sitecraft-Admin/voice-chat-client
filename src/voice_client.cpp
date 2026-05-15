@@ -1332,7 +1332,7 @@ void VoiceClient::set_mute(bool muted) {
     msg["type"]  = "mute";
     msg["value"] = muted;
     msg["session_id"] = g_voice_session_id;
-    enqueue_ws_send(msg.dump());
+    ws_.send_text_priority(msg.dump());
 }
 
 void VoiceClient::set_deafen(bool v) {
@@ -1358,7 +1358,7 @@ void VoiceClient::set_deafen(bool v) {
     msg["type"]  = "deafen";
     msg["value"] = v;
     msg["session_id"] = g_voice_session_id;
-    enqueue_ws_send(msg.dump());
+    ws_.send_text_priority(msg.dump());
 }
 
 void VoiceClient::set_channel(Channel ch) {
@@ -1394,16 +1394,15 @@ void VoiceClient::set_channel(Channel ch) {
         channel_switch_ack_ms_.store(0);
     }
     // set_channel is a critical control message: the server's rx_channel check
-    // (should_forward ch<=2) blocks audio until it arrives.  Send directly
-    // instead of via the 33ms queue so the server updates rx_channel before
-    // the first audio packet on the new channel is transmitted.
-    // ws_.send_text() is protected by send_mtx_ so it is safe to call from
-    // the D3D9 render thread.
+    // (should_forward ch<=2) blocks audio until it arrives.  Push to the FRONT
+    // of the send queue (priority) so it is not delayed behind pending audio
+    // frames — without this, set_channel could wait 60-100ms behind backlogged
+    // 20ms audio packets before reaching the server.
     if (ws_.is_connected() && auth_sent_) {
         json msg;
         msg["type"]    = "set_channel";
         msg["channel"] = static_cast<int>(ch);
-        ws_.send_text(msg.dump());
+        ws_.send_text_priority(msg.dump());
     }
 }
 

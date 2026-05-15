@@ -114,6 +114,30 @@ bool WsClient::enqueue_frame(uint8_t type, const uint8_t* data, uint32_t len) {
     return true;
 }
 
+bool WsClient::enqueue_frame_priority(uint8_t type, const uint8_t* data, uint32_t len) {
+    if (!connected_)
+        return false;
+
+    std::vector<uint8_t> frame(8 + len);
+    write_u16_be(frame.data(), RAW_MAGIC);
+    frame[2] = RAW_VERSION;
+    frame[3] = type;
+    write_u32_be(frame.data() + 4, len);
+    if (len && data)
+        std::memcpy(frame.data() + 8, data, len);
+
+    const size_t frame_size = frame.size();
+    std::lock_guard<std::mutex> lock(queue_mtx_);
+    if (!connected_)
+        return false;
+    if (queued_bytes_.load() + frame_size > MAX_QUEUED_BYTES)
+        return false;
+    send_queue_.push_front(std::move(frame));  // ← front, not back
+    queued_bytes_.fetch_add(frame_size);
+    queue_cv_.notify_one();
+    return true;
+}
+
 bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::wstring&) {
     std::lock_guard<std::mutex> conn_lock(conn_mtx_);
 
@@ -247,6 +271,12 @@ bool WsClient::send_text(const std::string& msg) {
     return enqueue_frame(static_cast<uint8_t>(RawPacketType::Text),
                          reinterpret_cast<const uint8_t*>(msg.data()),
                          static_cast<uint32_t>(msg.size()));
+}
+
+bool WsClient::send_text_priority(const std::string& msg) {
+    return enqueue_frame_priority(static_cast<uint8_t>(RawPacketType::Text),
+                                  reinterpret_cast<const uint8_t*>(msg.data()),
+                                  static_cast<uint32_t>(msg.size()));
 }
 
 bool WsClient::send_binary(const std::vector<uint8_t>& data) {

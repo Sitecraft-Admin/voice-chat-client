@@ -21,6 +21,7 @@ public:
     void disconnect();
 
     bool send_text(const std::string& msg);
+    bool send_text_priority(const std::string& msg); // push to front of queue (bypass audio backlog)
     bool send_binary(const std::vector<uint8_t>& data);
 
     bool is_connected() const { return connected_; }
@@ -46,4 +47,5 @@ private:
     void recv_loop();
     void send_loop();
     bool enqueue_frame(uint8_t type, const uint8_t* data, uint32_t len);
+    bool enqueue_frame_priority(uint8_t type, const uint8_t* data, uint32_t len);
 };
