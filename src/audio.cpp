@@ -787,19 +787,25 @@ void AudioPlayback::play_opus(int speaker_id, const uint8_t* opus_data,
         DWORD now = GetTickCount();
         if (sp->last_recv > 0) {
             float iat_ms  = static_cast<float>(now - sp->last_recv);
-            float jitter  = (iat_ms > 20.f) ? (iat_ms - 20.f) : (20.f - iat_ms);
-            // EWMA: smooth jitter estimate
-            sp->jitter_ms_ = 0.90f * sp->jitter_ms_ + 0.10f * jitter;
-            float prev_stat = rx_jitter_ms_stat_.load(std::memory_order_relaxed);
-            rx_jitter_ms_stat_.store(prev_stat * 0.90f + sp->jitter_ms_ * 0.10f, std::memory_order_relaxed);
+            if (iat_ms > 200.f) {
+                // Long gap — reset jitter so re-entry doesn't stall on max pre-buffer.
+                sp->jitter_ms_       = 0.0f;
+                sp->adaptive_target_ = 1;
+            } else {
+                float jitter = (iat_ms > 20.f) ? (iat_ms - 20.f) : (20.f - iat_ms);
+                // EWMA: smooth jitter estimate
+                sp->jitter_ms_ = 0.90f * sp->jitter_ms_ + 0.10f * jitter;
+                float prev_stat = rx_jitter_ms_stat_.load(std::memory_order_relaxed);
+                rx_jitter_ms_stat_.store(prev_stat * 0.90f + sp->jitter_ms_ * 0.10f, std::memory_order_relaxed);
+
+                // target = ceil(jitter / 20ms) + 1, clamped [JITTER_MIN, JITTER_TARGET_MAX]
+                int new_target = static_cast<int>(sp->jitter_ms_ / 20.f) + 1;
+                if (new_target < JITTER_MIN)        new_target = JITTER_MIN;
+                if (new_target > JITTER_TARGET_MAX) new_target = JITTER_TARGET_MAX;
+                sp->adaptive_target_ = new_target;
+            }
         }
         sp->last_recv = now;
-
-        // target = ceil(jitter / 20ms) + 1, clamped [JITTER_MIN, JITTER_TARGET_MAX]
-        int new_target = static_cast<int>(sp->jitter_ms_ / 20.f) + 1;
-        if (new_target < JITTER_MIN)         new_target = JITTER_MIN;
-        if (new_target > JITTER_TARGET_MAX)  new_target = JITTER_TARGET_MAX;
-        sp->adaptive_target_ = new_target;
 
         // Hard cap: drop oldest frame if queue is too deep
         int hard_max = sp->adaptive_target_ * 3;
@@ -1088,7 +1094,7 @@ void AudioPlayback::flush_all() {
         sp->buffering = true;
         sp->last_recv = 0;
         sp->jitter_ms_ = 0.0f;
-        sp->adaptive_target_ = 2;
+        sp->adaptive_target_ = 1; // 1 frame (20 ms) pre-buffer after channel switch
         sp->smooth_vol_ = 1.0f;
         sp->have_last_seq = false;
         sp->last_seq = 0;
