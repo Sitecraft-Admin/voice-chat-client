@@ -135,10 +135,22 @@ static void do_frame(LPDIRECT3DDEVICE9 pDevice) {
 HRESULT APIENTRY hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
     if (g_installed && !g_rendered_this_frame) {
         g_rendered_this_frame = true;
+        DWORD t1 = GetTickCount();
         do_frame(pDevice);
+        DWORD t2 = GetTickCount();
+        if (t2 - t1 > 5) {
+            char b[64]; sprintf_s(b, "[PERF] do_frame() took %lu ms", t2 - t1);
+            dbglog(b);
+        }
     }
-    HRESULT hr = oEndScene(pDevice); // direct call — no trampoline
+    DWORD t3 = GetTickCount();
+    HRESULT hr = oEndScene(pDevice);
+    DWORD t4 = GetTickCount();
     g_rendered_this_frame = false;
+    if (t4 - t3 > 5) {
+        char b[64]; sprintf_s(b, "[PERF] oEndScene() took %lu ms", t4 - t3);
+        dbglog(b);
+    }
     return hr;
 }
 
