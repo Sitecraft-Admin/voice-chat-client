@@ -59,8 +59,8 @@ static bool g_binding_key   = false; // waiting for key press
 static bool g_whisper_popup = false; // true while incoming-call popup is visible
 static bool g_call_popup    = false; // true while "call by name" input popup is open
 static char g_call_name[64] = {};    // name input buffer
-enum Language { VOICE_LANG_EN = 0, VOICE_LANG_TH = 1, VOICE_LANG_ID = 2, VOICE_LANG_FILIPINO = 3 };
-static int g_language = VOICE_LANG_TH;  // default remains Thai; cycle TH -> ID -> PH -> EN
+enum Language { VOICE_LANG_TH = 0, VOICE_LANG_EN = 1, VOICE_LANG_ID = 2, VOICE_LANG_FILIPINO = 3 };
+static int g_language = VOICE_LANG_TH;  // default Thai; cycle TH -> EN -> ID -> PH
 static ULONG_PTR g_gdiplus_token = 0;
 static int g_settings_tab   = 0;     // 0=voice, 1=players, 2=devices
 static char g_bg_status[128]  = "BG idle";
