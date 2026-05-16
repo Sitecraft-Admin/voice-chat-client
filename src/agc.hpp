@@ -71,7 +71,7 @@ public:
 private:
     // ── Tuning ──────────────────────────────────────────────────────────────────
     static constexpr float TARGET_RMS    = 0.10f;  // -20 dBFS target level
-    static constexpr float MAX_GAIN      = 8.0f;   // max 18 dB boost (prevents amplifying silence)
+    static constexpr float MAX_GAIN      = 4.0f;   // max 12 dB boost
     static constexpr float ATTACK        = 0.90f;  // envelope attack per frame (~fast, ~2ms at 20ms frames)
     static constexpr float RELEASE       = 0.003f; // envelope release per frame (~slow, ~7s decay)
     static constexpr float GAIN_ATTACK   = 0.50f;  // gain drop speed (fast — prevents clipping)

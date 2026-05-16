@@ -36,8 +36,7 @@ public:
         hist_full_    = false;
         noise_floor_  = 0.001f;
         gain_         = 1.0f;
-        pre_z_        = 0.f;   // pre-emphasis IIR state
-        de_z_         = 0.f;   // de-emphasis IIR state
+        pre_z_        = 0.f;
     }
 
     void set_enabled(bool v) { enabled_ = v; }
@@ -47,29 +46,23 @@ public:
     void process(int16_t* pcm, size_t n) {
         if (!enabled_ || n == 0) return;
 
-        // ── 1. Pre-emphasis: 1-pole HPF to boost consonants ───────────────────
-        //    y[n] = x[n] - PRE_COEFF * x[n-1]   (classic speech pre-emphasis)
-        {
-            float z = pre_z_;
-            for (size_t i = 0; i < n; i++) {
-                float x = pcm[i] * (1.f / 32768.f);
-                float y = x - PRE_COEFF * z;
-                z = x;
-                // write back temporarily (we'll re-quantise after gate)
-                pcm[i] = static_cast<int16_t>(std::max(-1.f, std::min(1.f, y)) * 32767.f);
-            }
-            pre_z_ = z;
-        }
-
-        // ── 2. Frame RMS (of pre-emphasised signal) ───────────────────────────
+        // ── 1. Compute RMS on pre-emphasised copy (gate detection only) ────────
+        //    Pre-emphasis boosts consonants (S, T, P) so the gate doesn't clip
+        //    them. Crucially, the pre-emphasis is used only to MEASURE, not to
+        //    process — applying the gate between pre/de-emphasis pair creates a
+        //    non-flat frequency response when gain < 1, making voices sound hollow.
         float sum = 0.f;
+        float z = pre_z_;
         for (size_t i = 0; i < n; i++) {
-            float s = pcm[i] * (1.f / 32768.f);
-            sum += s * s;
+            float x = pcm[i] * (1.f / 32768.f);
+            float pe = x - PRE_COEFF * z;
+            z = x;
+            sum += pe * pe;
         }
+        pre_z_ = z;
         float rms = std::sqrt(sum / static_cast<float>(n));
 
-        // ── 3. Minimum-statistics noise floor ─────────────────────────────────
+        // ── 2. Minimum-statistics noise floor ─────────────────────────────────
         rms_hist_[hist_idx_] = rms;
         hist_idx_ = (hist_idx_ + 1) % HIST_SIZE;
         if (hist_idx_ == 0) hist_full_ = true;
@@ -79,38 +72,21 @@ public:
         for (int i = 1; i < count; i++)
             if (rms_hist_[i] < min_r) min_r = rms_hist_[i];
 
-        // Noise floor = rolling minimum × overhead factor
         noise_floor_ = min_r * OVERHEAD;
 
-        // ── 4. Gate gain: smoothstep from closed (SNR=GATE_SNR) to open (SNR=OPEN_SNR)
+        // ── 3. Gate gain ───────────────────────────────────────────────────────
         float snr    = rms / (noise_floor_ + 1e-9f);
         float target = smoothstep(GATE_SNR, OPEN_SNR, snr);
-
-        float rate = (target > gain_) ? ATTACK : RELEASE;
+        float rate   = (target > gain_) ? ATTACK : RELEASE;
         gain_ += rate * (target - gain_);
         float g = std::max(FLOOR_GAIN, gain_);
 
-        // ── 5. Apply gate gain ─────────────────────────────────────────────────
+        // ── 4. Apply gate to the ORIGINAL signal (flat frequency response) ─────
         for (size_t i = 0; i < n; i++) {
             float v = pcm[i] * (1.f / 32768.f) * g;
             if (v >  1.f) v =  1.f;
             if (v < -1.f) v = -1.f;
             pcm[i] = static_cast<int16_t>(v * 32767.f);
-        }
-
-        // ── 6. De-emphasis: integrate back the pre-emphasis curve ─────────────
-        //    y[n] = x[n] + PRE_COEFF * y[n-1]   (inverse of step 1)
-        {
-            float z = de_z_;
-            for (size_t i = 0; i < n; i++) {
-                float x = pcm[i] * (1.f / 32768.f);
-                float y = x + PRE_COEFF * z;
-                z = y;
-                if (y >  1.f) y =  1.f;
-                if (y < -1.f) y = -1.f;
-                pcm[i] = static_cast<int16_t>(y * 32767.f);
-            }
-            de_z_ = z;
         }
     }
 
@@ -133,7 +109,6 @@ private:
     float noise_floor_= 0.001f;
     float gain_       = 1.0f;
     float pre_z_      = 0.f;
-    float de_z_       = 0.f;
 
     static float smoothstep(float lo, float hi, float x) {
         if (x <= lo) return 0.f;
