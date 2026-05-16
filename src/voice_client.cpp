@@ -485,6 +485,10 @@ void VoiceClient::on_ws_closed() {
         dbglog("[ws] disconnected during whisper — cleared local whisper state");
     }
     if (!running_) return;
+    if (session_replaced_.exchange(false)) {
+        dbglog("[ws] session replaced by another client — not reconnecting");
+        return;
+    }
     bool expected = false;
     if (!reconnecting_.compare_exchange_strong(expected, true)) return;
     dbglog("[ws] disconnected — starting reconnect loop");
@@ -766,6 +770,8 @@ void VoiceClient::on_text_message(const std::string& msg) {
         // the old char and immediately get kicked again.
         if (err == map_session_ended_text())
             char_switch_pending_ = true;
+        else if (err == "session replaced by new login")
+            session_replaced_ = true;
     }
     else if (type == "whisper_incoming") {
         std::lock_guard<std::mutex> lk(state_mtx_);

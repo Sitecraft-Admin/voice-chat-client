@@ -161,6 +161,7 @@ private:
     std::atomic<bool>    char_switch_pending_{ false }; // server told us "map session ended"
                                                         // → wait for char_id to change in memory
                                                         // before reconnecting (avoids double-auth)
+    std::atomic<bool>    session_replaced_{ false };   // server kicked us — another client took this slot
 
     void init_opus_encoder();
     void destroy_opus_encoder();
