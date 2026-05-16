@@ -790,7 +790,7 @@ void AudioPlayback::play_opus(int speaker_id, const uint8_t* opus_data,
             if (iat_ms > 200.f) {
                 // Long gap — reset jitter so re-entry doesn't stall on max pre-buffer.
                 sp->jitter_ms_       = 0.0f;
-                sp->adaptive_target_ = 1;
+                sp->adaptive_target_ = 2;
             } else {
                 float jitter = (iat_ms > 20.f) ? (iat_ms - 20.f) : (20.f - iat_ms);
                 // EWMA: smooth jitter estimate

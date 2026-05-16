@@ -352,8 +352,9 @@ void VoiceClient::init() {
 
     load_settings();   // restore PTT key, gains, devices, channel etc.
 
-    auth_sent_      = false;
-    auth_confirmed_ = false;
+    auth_sent_        = false;
+    auth_confirmed_   = false;
+    session_replaced_ = false;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
     reconnecting_ = false;
     init_opus_encoder();
@@ -713,6 +714,8 @@ void VoiceClient::on_text_message(const std::string& msg) {
         if (restored_channel >= 0) {
             char b[64]; sprintf_s(b, "[room] left room -> restored channel %d", restored_channel);
             dbglog(b);
+            // Tell server our active channel — server rx_channel is still 3 (Room) until we do this.
+            ws_.send_text_priority(json{{"type","set_channel"},{"channel",restored_channel}}.dump());
         }
     }
     else if (type == "war_state") {
