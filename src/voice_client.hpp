@@ -55,6 +55,7 @@ public:
     bool        is_loudness_norm()     const { return playback_.is_loudness_norm(); }
     void        set_loudness_norm(bool v)    { playback_.set_loudness_norm(v); }
     bool        is_deafened()   const { return deafened_.load(); }
+    bool        is_voice_banned() const { return voice_banned_.load(); }
     bool        is_war_mode()   const { return war_mode_.load(); }
     int         get_war_recommended_channel() const { return war_recommended_channel_.load(); }
     int         get_current_room_id() const { return current_room_id_.load(); }
@@ -162,6 +163,7 @@ private:
                                                         // → wait for char_id to change in memory
                                                         // before reconnecting (avoids double-auth)
     std::atomic<bool>    session_replaced_{ false };   // server kicked us — another client took this slot
+    std::atomic<bool>    voice_banned_{ false };       // GM banned — mic shown as off
 
     void init_opus_encoder();
     void destroy_opus_encoder();

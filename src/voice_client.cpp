@@ -210,7 +210,7 @@ Channel VoiceClient::get_channel() const {
 }
 
 bool VoiceClient::is_locally_talking() const {
-    if (muted_.load() || !ptt_active_.load()) return false;
+    if (muted_.load() || voice_banned_.load() || !ptt_active_.load()) return false;
     const DWORD last = last_local_talk_tick_.load();
     return last != 0 && (GetTickCount() - last) <= 220;
 }
@@ -355,6 +355,7 @@ void VoiceClient::init() {
     auth_sent_        = false;
     auth_confirmed_   = false;
     session_replaced_ = false;
+    voice_banned_     = false;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
     reconnecting_ = false;
     init_opus_encoder();
@@ -776,6 +777,16 @@ void VoiceClient::on_text_message(const std::string& msg) {
         else if (err == "session replaced by new login")
             session_replaced_ = true;
     }
+    else if (type == "admin_banned") {
+        voice_banned_ = true;
+        set_whisper_notice("Voice banned by GM");
+        dbglog("[admin] voice banned — mic off");
+    }
+    else if (type == "admin_unbanned") {
+        voice_banned_ = false;
+        set_whisper_notice("Voice ban lifted");
+        dbglog("[admin] voice ban lifted — mic restored");
+    }
     else if (type == "whisper_incoming") {
         std::lock_guard<std::mutex> lk(state_mtx_);
         whisper_sid_       = j.value("sid", "");
@@ -1196,7 +1207,7 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
         tx_seq_.store(0, std::memory_order_relaxed);
     }
 
-    if (!ws_.is_connected() || !in_map_.load() || muted_.load() || deafened_.load() || !ptt_active_.load() || !auth_sent_ || !opus_enc_) {
+    if (!ws_.is_connected() || !in_map_.load() || muted_.load() || voice_banned_.load() || deafened_.load() || !ptt_active_.load() || !auth_sent_ || !opus_enc_) {
         s_tx_speech_hangover = 0;
         // Always clear accumulator when not transmitting so stale audio
         // cannot leak into the next PTT press or reconnect.
