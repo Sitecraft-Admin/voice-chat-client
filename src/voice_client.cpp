@@ -632,6 +632,10 @@ void VoiceClient::on_text_message(const std::string& msg) {
 
     if (type == "auth_ok") {
         auth_confirmed_.store(true);
+        // Reset ban state — server will send admin_banned right after auth_ok
+        // if the account is still banned. Without this reset, a player who was
+        // unbanned while disconnected would stay locally banned after reconnect.
+        voice_banned_.store(false);
         dbglog("[auth] auth_ok");
         // Sync current client-side TX/RX state to server after auth.
         // Why: position_loop may have sent ptt before auth completed, and the
