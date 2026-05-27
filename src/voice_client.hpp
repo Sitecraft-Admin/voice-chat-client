@@ -164,6 +164,8 @@ private:
                                                         // before reconnecting (avoids double-auth)
     std::atomic<bool>    session_replaced_{ false };   // server kicked us — another client took this slot
     std::atomic<bool>    voice_banned_{ false };       // GM banned — mic shown as off
+    std::atomic<bool>    flood_banned_{ false };       // audio flood ban — backoff reconnect until expiry
+    std::atomic<DWORD>   flood_ban_until_tick_{ 0 };  // GetTickCount() when ban expires
 
     void init_opus_encoder();
     void destroy_opus_encoder();

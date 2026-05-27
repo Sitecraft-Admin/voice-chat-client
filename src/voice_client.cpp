@@ -354,8 +354,10 @@ void VoiceClient::init() {
 
     auth_sent_        = false;
     auth_confirmed_   = false;
-    session_replaced_ = false;
-    voice_banned_     = false;
+    session_replaced_     = false;
+    voice_banned_         = false;
+    flood_banned_         = false;
+    flood_ban_until_tick_ = 0;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
     reconnecting_ = false;
     init_opus_encoder();
@@ -514,6 +516,20 @@ void VoiceClient::on_ws_closed() {
 
 void VoiceClient::reconnect_loop() {
     dbglog("[ws] reconnect loop start");
+    // If we were flood-banned, wait until the ban expires before connecting.
+    if (flood_banned_.load()) {
+        const DWORD until = flood_ban_until_tick_.load();
+        while (running_) {
+            const DWORD now = GetTickCount();
+            if ((int32_t)(until - now) <= 0) break;
+            DWORD remain = until - now;
+            char dbgbuf[96];
+            sprintf_s(dbgbuf, "[ws] flood-banned — waiting %u s before reconnect", remain / 1000);
+            dbglog(dbgbuf);
+            Sleep(remain < 5000 ? remain : 5000); // check every 5 s so shutdown is responsive
+        }
+        flood_banned_ = false;
+    }
     // First attempt is fast (500 ms) so char-switch feels instant.
     // On repeated failures (server down) the delay backs off to 10 s.
     int delay = 500;
@@ -786,6 +802,14 @@ void VoiceClient::on_text_message(const std::string& msg) {
         voice_banned_ = false;
         set_whisper_notice("Voice ban lifted");
         dbglog("[admin] voice ban lifted — mic restored");
+    }
+    else if (type == "flood_banned") {
+        uint32_t dur_ms = j.value("duration_ms", 300000u);
+        flood_ban_until_tick_ = GetTickCount() + dur_ms;
+        flood_banned_ = true;
+        char dbgbuf[96];
+        sprintf_s(dbgbuf, "[flood] audio flood ban — reconnect paused for %u s", dur_ms / 1000);
+        dbglog(dbgbuf);
     }
     else if (type == "whisper_incoming") {
         std::lock_guard<std::mutex> lk(state_mtx_);
