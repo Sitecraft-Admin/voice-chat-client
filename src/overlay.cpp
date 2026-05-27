@@ -1206,14 +1206,14 @@ void draw_settings_window() {
         const float dot_y = chip_pos.y + 12.f;
         ImU32 dot_col = IM_COL32(255, 210, 40, 255);
         if (!vc.is_connected()) dot_col = IM_COL32(120, 180, 255, 255);
-        else if ((vc.is_muted() || vc.is_voice_banned()) && vc.is_deafened()) dot_col = IM_COL32(230, 95, 95, 255);
-        else if (vc.is_muted() || vc.is_voice_banned() || vc.is_deafened()) dot_col = IM_COL32(255, 170, 70, 255);
+        else if ((vc.is_muted() || vc.is_voice_banned() || vc.is_no_license()) && vc.is_deafened()) dot_col = IM_COL32(230, 95, 95, 255);
+        else if (vc.is_muted() || vc.is_voice_banned() || vc.is_no_license() || vc.is_deafened()) dot_col = IM_COL32(255, 170, 70, 255);
         else if (!vc.is_locally_talking()) dot_col = IM_COL32(185, 190, 205, 255);
         sdl->AddCircleFilled(ImVec2(chip_pos.x + 10.f, dot_y), 5.f, dot_col);
         ImGui::SetCursorPos(ImVec2(20.f, 2.f));
         const char* device_status = !vc.is_connected() ? L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb9\x80\xe0\xb8\x8a\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x88\xe0\xb8\xad", "Connecting", "Menghubungkan", "Kumokonekta")
-    : ((vc.is_muted() || vc.is_voice_banned()) && vc.is_deafened()) ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Muted", "Diamkan", "Natahimik")
-    : (vc.is_muted() || vc.is_voice_banned()) ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic Off", "Mikrofon Mati", "Mikropono Naka-off")
+    : ((vc.is_muted() || vc.is_voice_banned() || vc.is_no_license()) && vc.is_deafened()) ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\x97\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x87\xe0\xb8\xab\xe0\xb8\xa1\xe0\xb8\x94", "Muted", "Diamkan", "Natahimik")
+    : (vc.is_muted() || vc.is_voice_banned() || vc.is_no_license()) ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Mic Off", "Mikrofon Mati", "Mikropono Naka-off")
     : vc.is_deafened() ? L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Speaker Off", "Pengeras Mati", "Tagapagsalita Naka-off")
     : vc.is_locally_talking() ? L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking", "Berbicara", "Nagsasalita")
     : L("\xe0\xb8\x9e\xe0\xb8\xa3\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\xa1", "Ready", "Siap", "Handa");
@@ -1463,7 +1463,7 @@ void draw_voicebar_call_window() {
     auto& vc        = VoiceClient::get();
     bool  connected = vc.is_connected();
     bool  ptt       = vc.is_locally_talking();
-    bool  muted     = vc.is_muted() || vc.is_voice_banned();
+    bool  muted     = vc.is_muted() || vc.is_voice_banned() || vc.is_no_license();
     bool  deafened  = vc.is_deafened();
     Channel ch      = vc.get_channel();
 
@@ -1534,7 +1534,7 @@ void draw_voicebar_call_window() {
         const bool next_deafen = !deafened;
         vc.set_deafen(next_deafen);
         deafened = next_deafen;
-        muted = vc.is_muted() || vc.is_voice_banned();
+        muted = vc.is_muted() || vc.is_voice_banned() || vc.is_no_license();
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", deafened ? "Enable speaker" : "Disable speaker");
@@ -1707,7 +1707,7 @@ void draw_voice_window() {
     auto& vc        = VoiceClient::get();
     bool  connected = vc.is_connected();
     bool  ptt       = vc.is_locally_talking();
-    bool  muted     = vc.is_muted() || vc.is_voice_banned();
+    bool  muted     = vc.is_muted() || vc.is_voice_banned() || vc.is_no_license();
     bool  deafened  = vc.is_deafened();
     Channel ch      = vc.get_channel();
 
@@ -1830,7 +1830,7 @@ void draw_voice_window() {
         const bool next_deafen = !deafened;
         vc.set_deafen(next_deafen);
         deafened = next_deafen;
-        muted = vc.is_muted() || vc.is_voice_banned();
+        muted = vc.is_muted() || vc.is_voice_banned() || vc.is_no_license();
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", deafened ? "Enable speaker" : "Disable speaker");

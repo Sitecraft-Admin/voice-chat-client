@@ -210,7 +210,7 @@ Channel VoiceClient::get_channel() const {
 }
 
 bool VoiceClient::is_locally_talking() const {
-    if (muted_.load() || voice_banned_.load() || !ptt_active_.load()) return false;
+    if (muted_.load() || voice_banned_.load() || no_license_.load() || !ptt_active_.load()) return false;
     const DWORD last = last_local_talk_tick_.load();
     return last != 0 && (GetTickCount() - last) <= 220;
 }
@@ -356,6 +356,7 @@ void VoiceClient::init() {
     auth_confirmed_   = false;
     session_replaced_     = false;
     voice_banned_         = false;
+    no_license_           = false;
     flood_banned_         = false;
     flood_ban_until_tick_ = 0;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
@@ -632,10 +633,12 @@ void VoiceClient::on_text_message(const std::string& msg) {
 
     if (type == "auth_ok") {
         auth_confirmed_.store(true);
-        // Reset ban state — server will send admin_banned right after auth_ok
-        // if the account is still banned. Without this reset, a player who was
-        // unbanned while disconnected would stay locally banned after reconnect.
+        // Reset ban/license state — server will re-send admin_banned and/or
+        // license_required right after auth_ok if either is still active.
+        // Without this reset, a player who was unbanned / granted a license
+        // while disconnected would stay locally in the old state after reconnect.
         voice_banned_.store(false);
+        no_license_.store(false);
         dbglog("[auth] auth_ok");
         // Sync current client-side TX/RX state to server after auth.
         // Why: position_loop may have sent ptt before auth completed, and the
@@ -806,6 +809,16 @@ void VoiceClient::on_text_message(const std::string& msg) {
         voice_banned_ = false;
         set_whisper_notice("Voice ban lifted");
         dbglog("[admin] voice ban lifted — mic restored");
+    }
+    else if (type == "license_required") {
+        no_license_ = true;
+        set_whisper_notice("Voice license required");
+        dbglog("[license] no active voice license — mic disabled");
+    }
+    else if (type == "license_granted") {
+        no_license_ = false;
+        set_whisper_notice("Voice license active");
+        dbglog("[license] voice license granted — mic enabled");
     }
     else if (type == "flood_banned") {
         uint32_t dur_ms = j.value("duration_ms", 300000u);
@@ -1235,7 +1248,7 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
         tx_seq_.store(0, std::memory_order_relaxed);
     }
 
-    if (!ws_.is_connected() || !in_map_.load() || muted_.load() || voice_banned_.load() || deafened_.load() || !ptt_active_.load() || !auth_sent_ || !opus_enc_) {
+    if (!ws_.is_connected() || !in_map_.load() || muted_.load() || voice_banned_.load() || no_license_.load() || deafened_.load() || !ptt_active_.load() || !auth_sent_ || !opus_enc_) {
         s_tx_speech_hangover = 0;
         // Always clear accumulator when not transmitting so stale audio
         // cannot leak into the next PTT press or reconnect.

@@ -56,6 +56,7 @@ public:
     void        set_loudness_norm(bool v)    { playback_.set_loudness_norm(v); }
     bool        is_deafened()   const { return deafened_.load(); }
     bool        is_voice_banned() const { return voice_banned_.load(); }
+    bool        is_no_license() const { return no_license_.load(); }
     bool        is_war_mode()   const { return war_mode_.load(); }
     int         get_war_recommended_channel() const { return war_recommended_channel_.load(); }
     int         get_current_room_id() const { return current_room_id_.load(); }
@@ -164,6 +165,7 @@ private:
                                                         // before reconnecting (avoids double-auth)
     std::atomic<bool>    session_replaced_{ false };   // server kicked us — another client took this slot
     std::atomic<bool>    voice_banned_{ false };       // GM banned — mic shown as off
+    std::atomic<bool>    no_license_{ false };         // server requires license and we don't have one
     std::atomic<bool>    flood_banned_{ false };       // audio flood ban — backoff reconnect until expiry
     std::atomic<DWORD>   flood_ban_until_tick_{ 0 };  // GetTickCount() when ban expires
 
