@@ -1139,7 +1139,7 @@ void draw_settings_window() {
                 ImGui::SameLine(0, 4.f);
 
                 char m_id[32]; sprintf_s(m_id, "##m%u", id);
-                const char* m_lbl = is_muted ? L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Unmute", "Aktifkan", "Buksan ang Tunog") : L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94", "Mute", "Diamkan", "Tahimik");
+                const char* m_lbl = is_muted ? L("\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Unmute", "Aktifkan", "Buksan ang Tunog") : L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Mute", "Diamkan", "Tahimik");
                 if (exit_button(m_id, m_lbl, ImVec2(ex_w, ex_h), is_muted)) {
                     if (is_muted) vc.unmute_player(id); else vc.mute_player(id);
                     g_player_cache.last_refresh = -1.0;

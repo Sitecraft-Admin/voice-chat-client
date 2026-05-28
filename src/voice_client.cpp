@@ -810,6 +810,34 @@ void VoiceClient::on_text_message(const std::string& msg) {
         set_whisper_notice("Voice ban lifted");
         dbglog("[admin] voice ban lifted — mic restored");
     }
+    else if (type == "your_blocks") {
+        // Authoritative block list from server (account-level blocks resolved
+        // to currently-online char_ids). Replace local set so the UI reflects
+        // server state, not stale data from a previous session.
+        std::lock_guard<std::mutex> lk(muted_players_mtx_);
+        muted_players_.clear();
+        if (j.contains("blocked") && j["blocked"].is_array()) {
+            for (auto& e : j["blocked"]) {
+                int cid = e.value("char_id", 0);
+                if (cid > 0) muted_players_.insert(static_cast<uint32_t>(cid));
+            }
+        }
+        dbglog("[block] received your_blocks list from server");
+    }
+    else if (type == "block_added") {
+        int cid = j.value("target_char_id", 0);
+        if (cid > 0) {
+            std::lock_guard<std::mutex> lk(muted_players_mtx_);
+            muted_players_.insert(static_cast<uint32_t>(cid));
+        }
+    }
+    else if (type == "block_removed") {
+        int cid = j.value("target_char_id", 0);
+        if (cid > 0) {
+            std::lock_guard<std::mutex> lk(muted_players_mtx_);
+            muted_players_.erase(static_cast<uint32_t>(cid));
+        }
+    }
     else if (type == "license_required") {
         no_license_ = true;
         set_whisper_notice("Voice license required");
@@ -1497,13 +1525,30 @@ std::string VoiceClient::get_speaker_name(uint32_t char_id) {
 }
 
 void VoiceClient::mute_player(uint32_t char_id) {
-    std::lock_guard<std::mutex> lk(muted_players_mtx_);
-    muted_players_.insert(char_id);
+    {
+        std::lock_guard<std::mutex> lk(muted_players_mtx_);
+        muted_players_.insert(char_id);  // optimistic local update for instant UI feedback
+    }
+    // Server persists the block by account_id and filters audio on its side.
+    if (ws_.is_connected() && auth_confirmed_.load()) {
+        json msg;
+        msg["type"]           = "block_add";
+        msg["target_char_id"] = static_cast<int>(char_id);
+        ws_.send_text(msg.dump());
+    }
 }
 
 void VoiceClient::unmute_player(uint32_t char_id) {
-    std::lock_guard<std::mutex> lk(muted_players_mtx_);
-    muted_players_.erase(char_id);
+    {
+        std::lock_guard<std::mutex> lk(muted_players_mtx_);
+        muted_players_.erase(char_id);
+    }
+    if (ws_.is_connected() && auth_confirmed_.load()) {
+        json msg;
+        msg["type"]           = "block_remove";
+        msg["target_char_id"] = static_cast<int>(char_id);
+        ws_.send_text(msg.dump());
+    }
 }
 
 bool VoiceClient::is_player_muted(uint32_t char_id) const {
