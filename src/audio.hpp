@@ -48,7 +48,14 @@ public:
 private:
     bool start_internal();
     static DWORD WINAPI capture_thread(LPVOID param);
-    std::vector<int16_t> convert_to_pcm16(const BYTE* data, UINT32 frames) const;
+    std::vector<int16_t> convert_to_pcm16(const BYTE* data, UINT32 frames);
+
+    // Streaming resampler state (device rate → 48 kHz). Persisted across WASAPI
+    // packets so the cubic interpolation is continuous — resampling each packet
+    // independently produced a discontinuity at every packet boundary (~10 ms),
+    // which is audible as crackle/"blown speaker" on non-48 kHz microphones.
+    std::vector<float> rs_buf_;        // unconsumed device-rate mono samples
+    double             rs_pos_ = 1.0;  // fractional read index into rs_buf_ (>=1 for cubic p0)
 
     AudioCaptureCallback cb_;
     std::wstring device_id_;       // empty = default
@@ -122,11 +129,20 @@ public:
 private:
     // 20 ms @ 48 kHz mono
     static constexpr UINT32 FRAME_SAMPLES  = 960;
-    // Absolute maximum queue depth (hard cap: 200 ms)
-    static constexpr int    JITTER_MAX_ABS = 10;
+    // Absolute maximum queue depth (hard cap: 280 ms). Raised so a TCP
+    // retransmit stall (~1 RTT of frames arriving late in a burst) can be
+    // absorbed instead of overflowing and dropping audio.
+    static constexpr int    JITTER_MAX_ABS = 14;
     static constexpr int    MAX_CONCEAL_FRAMES = JITTER_MAX_ABS;
-    static constexpr int    JITTER_MIN     = 3;
-    static constexpr int    JITTER_TARGET_MAX = 8;
+    // Floor 4 frames (80 ms): on TCP even a healthy LAN has periodic micro
+    // stalls (Nagle is off, but the kernel still coalesces under load); 80 ms
+    // of cushion keeps playout from draining to empty between bursts. Still
+    // within the Discord-style 40–100 ms comfort range for game voice.
+    static constexpr int    JITTER_MIN     = 4;
+    // Ceiling 12 frames (240 ms): only reached on genuinely high-jitter links
+    // (cross-region, mobile). Local players stay near the 80 ms floor, so this
+    // is "free" headroom for lossy connections without penalising everyone.
+    static constexpr int    JITTER_TARGET_MAX = 12;
 
     bool init_stream(int speaker_id);   // must be called with streams_mtx_ held
 
@@ -154,6 +170,13 @@ private:
         // Adaptive jitter buffer
         float jitter_ms_      = 0.0f;  // EWMA of |inter-arrival - 20 ms|
         int   adaptive_target_= JITTER_MIN; // current target depth (frames)
+
+        // Streaming resampler state (48 kHz decoded audio → device rate).
+        // Carried across frames so the cubic interpolation is continuous —
+        // per-frame resampling produced a discontinuity at every 20 ms frame
+        // boundary, audible as crackle on non-48 kHz output devices.
+        std::vector<float> rs_buf_;        // unconsumed 48 kHz mono samples
+        double             rs_pos_ = 1.0;  // fractional read index (>=1 for cubic p0)
 
         // Distance-based 1-pole IIR low-pass filter (per-speaker state)
         float lpf_z_  = 0.0f;  // IIR state

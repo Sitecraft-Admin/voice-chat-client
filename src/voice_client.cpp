@@ -1,3 +1,5 @@
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include "voice_client.hpp"
 #include <nlohmann/json.hpp>
 #include <opus/opus.h>
@@ -5,8 +7,11 @@
 #include <cmath>
 #include <fstream>
 #include <Windows.h>
+#include <condition_variable>
 #include "obf_string.hpp"
 #include "anti_tamper.hpp"
+
+#pragma comment(lib, "ws2_32.lib")
 
 using json = nlohmann::json;
 
@@ -24,6 +29,232 @@ static uint64_t make_session_id() {
     // fallback: mix observable values if CSPRNG unavailable (should not happen)
     return GetTickCount64() ^ (static_cast<uint64_t>(GetCurrentProcessId()) << 32);
 }
+
+namespace {
+
+constexpr uint32_t UDP_MAGIC = 0x56554450u; // "VUDP"
+constexpr uint8_t  UDP_VERSION = 1;
+constexpr uint8_t  UDP_HELLO = 1;
+constexpr uint8_t  UDP_VOICE = 2;
+constexpr uint8_t  UDP_VOICE_FWD = 3;
+constexpr size_t   UDP_VOICE_HEADER = 33;
+constexpr size_t   UDP_FWD_PREFIX = 6;
+constexpr size_t   UDP_MAX_PACKET = 1600;
+
+static void udp_write_u32(uint8_t* p, uint32_t v) {
+    p[0] = static_cast<uint8_t>((v >> 24) & 0xFF);
+    p[1] = static_cast<uint8_t>((v >> 16) & 0xFF);
+    p[2] = static_cast<uint8_t>((v >> 8) & 0xFF);
+    p[3] = static_cast<uint8_t>(v & 0xFF);
+}
+
+static void udp_write_u64(uint8_t* p, uint64_t v) {
+    for (int i = 7; i >= 0; --i) {
+        p[7 - i] = static_cast<uint8_t>((v >> (i * 8)) & 0xFF);
+    }
+}
+
+static uint32_t udp_read_u32(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) |
+           (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) |
+            static_cast<uint32_t>(p[3]);
+}
+
+static std::string wide_host_to_utf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return {};
+    std::string out(static_cast<size_t>(n - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+class UdpVoiceTransport {
+public:
+    using PacketCallback = std::function<void(const std::vector<uint8_t>&)>;
+
+    void start(const std::wstring& host, uint16_t port, uint64_t session_id,
+               uint32_t char_id, uint64_t token, PacketCallback cb) {
+        stop();
+        if (port == 0 || session_id == 0 || char_id == 0 || token == 0) return;
+
+        callback_ = std::move(cb);
+        session_id_ = session_id;
+        char_id_ = char_id;
+        token_ = token;
+
+        if (!ensure_wsa()) return;
+
+        sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock_ == INVALID_SOCKET) {
+            dbglog("[udp] socket failed");
+            stop();
+            return;
+        }
+
+        const std::string host8 = wide_host_to_utf8(host);
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        hints.ai_protocol = IPPROTO_UDP;
+        addrinfo* res = nullptr;
+        if (getaddrinfo(host8.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res) {
+            dbglog("[udp] getaddrinfo failed");
+            stop();
+            return;
+        }
+        server_addr_ = *reinterpret_cast<sockaddr_in*>(res->ai_addr);
+        freeaddrinfo(res);
+
+        u_long nonblock = 1;
+        ioctlsocket(sock_, FIONBIO, &nonblock);
+
+        running_.store(true);
+        rx_thread_ = std::thread([this] { recv_loop(); });
+        send_hello();
+        dbglog("[udp] voice transport started");
+    }
+
+    void stop() {
+        running_.store(false);
+        SOCKET s = sock_;
+        sock_ = INVALID_SOCKET;
+        if (s != INVALID_SOCKET) {
+            closesocket(s);
+        }
+        if (rx_thread_.joinable()) {
+            rx_thread_.join();
+        }
+        ready_.store(false);
+        callback_ = nullptr;
+    }
+
+    bool ready() const { return ready_.load(); }
+
+    bool send_voice(uint8_t channel, uint32_t gid, uint16_t seq,
+                    const uint8_t* opus, size_t opus_len) {
+        SOCKET s = sock_;
+        if (!is_live() || s == INVALID_SOCKET || !opus || opus_len == 0)
+            return false;
+        if (opus_len > UDP_MAX_PACKET - UDP_VOICE_HEADER)
+            return false;
+
+        std::vector<uint8_t> packet(UDP_VOICE_HEADER + opus_len);
+        udp_write_u32(packet.data(), UDP_MAGIC);
+        packet[4] = UDP_VERSION;
+        packet[5] = UDP_VOICE;
+        udp_write_u64(packet.data() + 6, session_id_);
+        udp_write_u32(packet.data() + 14, char_id_);
+        udp_write_u64(packet.data() + 18, token_);
+        packet[26] = static_cast<uint8_t>((seq >> 8) & 0xFF);
+        packet[27] = static_cast<uint8_t>(seq & 0xFF);
+        packet[28] = channel;
+        udp_write_u32(packet.data() + 29, gid);
+        std::memcpy(packet.data() + UDP_VOICE_HEADER, opus, opus_len);
+
+        int rc = sendto(s, reinterpret_cast<const char*>(packet.data()),
+                        static_cast<int>(packet.size()), 0,
+                        reinterpret_cast<const sockaddr*>(&server_addr_),
+                        sizeof(server_addr_));
+        return rc == static_cast<int>(packet.size());
+    }
+
+private:
+    void send_hello() {
+        SOCKET s = sock_;
+        if (s == INVALID_SOCKET) return;
+        uint8_t packet[26] = {};
+        udp_write_u32(packet, UDP_MAGIC);
+        packet[4] = UDP_VERSION;
+        packet[5] = UDP_HELLO;
+        udp_write_u64(packet + 6, session_id_);
+        udp_write_u32(packet + 14, char_id_);
+        udp_write_u64(packet + 18, token_);
+        sendto(s, reinterpret_cast<const char*>(packet), sizeof(packet), 0,
+               reinterpret_cast<const sockaddr*>(&server_addr_), sizeof(server_addr_));
+    }
+
+    void recv_loop() {
+        DWORD last_hello = GetTickCount();
+        while (running_.load()) {
+            SOCKET s = sock_;
+            if (s == INVALID_SOCKET) break;
+
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(s, &readfds);
+            timeval tv{};
+            tv.tv_sec = 0;
+            tv.tv_usec = 100000;
+            int ret = select(0, &readfds, nullptr, nullptr, &tv);
+            DWORD now = GetTickCount();
+            const DWORD hello_interval = ready_.load() ? 10000u : 500u;
+            if (now - last_hello >= hello_interval) {
+                send_hello();
+                last_hello = now;
+            }
+            if (ret <= 0 || !FD_ISSET(s, &readfds)) continue;
+
+            uint8_t buf[UDP_MAX_PACKET] = {};
+            sockaddr_in from{};
+            int from_len = sizeof(from);
+            int n = recvfrom(s, reinterpret_cast<char*>(buf), sizeof(buf), 0,
+                             reinterpret_cast<sockaddr*>(&from), &from_len);
+            if (n < static_cast<int>(UDP_FWD_PREFIX)) continue;
+            if (udp_read_u32(buf) != UDP_MAGIC || buf[4] != UDP_VERSION) continue;
+            if (buf[5] == UDP_HELLO) {
+                ready_.store(true);
+                last_rx_tick_.store(GetTickCount());
+                continue;
+            }
+            if (buf[5] != UDP_VOICE_FWD || n <= static_cast<int>(UDP_FWD_PREFIX + 42))
+                continue;
+
+            ready_.store(true);
+            last_rx_tick_.store(GetTickCount());
+            PacketCallback cb = callback_;
+            if (cb) {
+                cb(std::vector<uint8_t>(buf + UDP_FWD_PREFIX, buf + n));
+            }
+        }
+    }
+
+    bool is_live() const {
+        if (!ready_.load()) return false;
+        DWORD last = last_rx_tick_.load();
+        return last != 0 && (GetTickCount() - last) <= 30000;
+    }
+
+    SOCKET sock_ = INVALID_SOCKET;
+    sockaddr_in server_addr_{};
+    std::thread rx_thread_;
+    std::atomic<bool> running_{false};
+    std::atomic<bool> ready_{false};
+    std::atomic<DWORD> last_rx_tick_{0};
+    uint64_t session_id_ = 0;
+    uint32_t char_id_ = 0;
+    uint64_t token_ = 0;
+    PacketCallback callback_;
+
+    static bool ensure_wsa() {
+        static std::mutex mtx;
+        static bool started = false;
+        std::lock_guard<std::mutex> lock(mtx);
+        if (started) return true;
+        WSADATA wsa{};
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            dbglog("[udp] WSAStartup failed");
+            return false;
+        }
+        started = true;
+        return true;
+    }
+};
+
+static UdpVoiceTransport g_udp_voice;
+
+} // namespace
 
 static std::string map_session_ended_text() {
     constexpr unsigned char k = 0x21u;
@@ -425,6 +656,7 @@ void VoiceClient::shutdown() {
     auth_confirmed_ = false;
     reset_mic_pipeline_.store(true);
 
+    g_udp_voice.stop();
     ws_.disconnect();
 
     if (init_to_join.joinable())
@@ -446,6 +678,7 @@ void VoiceClient::shutdown() {
 void VoiceClient::on_ws_closed() {
     auth_sent_      = false;
     auth_confirmed_ = false;
+    g_udp_voice.stop();
     // NOTE: do NOT touch pcm_accum_ here — this function now runs on both
     // the network recv thread (server-drop path) AND the position thread (char
     // switch path), while pcm_accum_ is mutated by the audio capture thread.
@@ -634,6 +867,16 @@ void VoiceClient::on_text_message(const std::string& msg) {
         voice_banned_.store(false);
         no_license_.store(false);
         dbglog("[auth] auth_ok");
+        const uint16_t udp_port = static_cast<uint16_t>(j.value("udp_port", 0));
+        const uint64_t udp_token = j.value("udp_token", static_cast<uint64_t>(0));
+        if (udp_port != 0 && udp_token != 0) {
+            const uint32_t char_id = static_cast<uint32_t>(last_auth_char_id_.load());
+            g_udp_voice.start(server_host_, udp_port, g_voice_session_id, char_id,
+                              udp_token,
+                              [this](const std::vector<uint8_t>& packet) {
+                                  on_binary_message(packet);
+                              });
+        }
         // Sync current client-side TX/RX state to server after auth.
         // Why: position_loop may have sent ptt before auth completed, and the
         // server ignores pre-auth state updates. Re-sending here prevents the
@@ -1361,9 +1604,13 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
             continue;
         }
 
+        const uint8_t ch_byte = static_cast<uint8_t>(tx_channel);
+        if (g_udp_voice.send_voice(ch_byte, gid, seq, opus_buf, static_cast<size_t>(opus_bytes)))
+            continue;
+
         std::vector<uint8_t> packet;
         packet.reserve(7 + opus_bytes);
-        packet.push_back(static_cast<uint8_t>(tx_channel));
+        packet.push_back(ch_byte);
         packet.push_back((gid >> 24) & 0xFF);
         packet.push_back((gid >> 16) & 0xFF);
         packet.push_back((gid >> 8)  & 0xFF);

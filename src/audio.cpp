@@ -356,6 +356,10 @@ bool AudioCapture::start(AudioCaptureCallback cb) {
         g_capfmt[this] = kind;
     }
 
+    // Reset streaming-resampler state for the new device/rate.
+    rs_buf_.clear();
+    rs_pos_ = 1.0;
+
     running_ = true;
     thread_  = CreateThread(nullptr, 0, capture_thread, this, 0, nullptr);
     if (!thread_) {
@@ -425,7 +429,7 @@ DWORD WINAPI AudioCapture::capture_thread(LPVOID param) {
     return 0;
 }
 
-std::vector<int16_t> AudioCapture::convert_to_pcm16(const BYTE* data, UINT32 frames) const {
+std::vector<int16_t> AudioCapture::convert_to_pcm16(const BYTE* data, UINT32 frames) {
     SampleKind kind = SampleKind::Unknown;
     { std::lock_guard<std::mutex> lk(g_capfmt_mtx); auto it = g_capfmt.find(this); if (it != g_capfmt.end()) kind = it->second; }
 
@@ -454,40 +458,59 @@ std::vector<int16_t> AudioCapture::convert_to_pcm16(const BYTE* data, UINT32 fra
         }
     }
 
-    // Resample to 48kHz with linear interpolation
     constexpr DWORD OUT_RATE = 48000;
-    UINT32 out_frames = (fmt_rate_ == OUT_RATE)
-        ? frames
-        : static_cast<UINT32>((double)frames * OUT_RATE / fmt_rate_);
+    const float g = gain.load();
 
-    // Cubic Hermite resample from device rate → OUT_RATE
-    auto mono_at = [&](int i) -> float {
-        if (i < 0) i = 0;
-        if (i >= (int)frames) i = (int)frames - 1;
-        return mono[i];
-    };
-
-    std::vector<int16_t> pcm(out_frames);
-    for (UINT32 i = 0; i < out_frames; i++) {
-        float v;
-        if (fmt_rate_ == OUT_RATE) {
-            v = mono[i < frames ? i : frames - 1];
-        } else {
-            double pos = (double)i * fmt_rate_ / OUT_RATE;
-            int    i1  = (int)pos;
-            float  t   = (float)(pos - i1);
-
-            float p0 = mono_at(i1 - 1), p1 = mono_at(i1);
-            float p2 = mono_at(i1 + 1), p3 = mono_at(i1 + 2);
-            float a = -0.5f*p0 + 1.5f*p1 - 1.5f*p2 + 0.5f*p3;
-            float b =       p0 - 2.5f*p1 + 2.0f*p2 - 0.5f*p3;
-            float c = -0.5f*p0            + 0.5f*p2;
-            v = ((a*t + b)*t + c)*t + p1;
+    // Device already at 48 kHz → no resampling, just gain + clip.
+    if (fmt_rate_ == OUT_RATE) {
+        std::vector<int16_t> pcm(frames);
+        for (UINT32 i = 0; i < frames; i++) {
+            float v = mono[i] * g;
+            if (v >  1.0f) v =  1.0f;
+            if (v < -1.0f) v = -1.0f;
+            pcm[i] = static_cast<int16_t>(v * 32767.0f);
         }
-        v *= gain.load();
+        return pcm;
+    }
+
+    // ── Streaming cubic Hermite resample (device rate → 48 kHz) ──────────────
+    // State (rs_buf_ + rs_pos_) carries across WASAPI packets so interpolation
+    // is continuous. Previously each packet was resampled in isolation with the
+    // phase reset to 0 and the cubic's neighbours clamped at the packet edges,
+    // producing a discontinuity every packet → crackle on non-48 kHz mics.
+    rs_buf_.insert(rs_buf_.end(), mono.begin(), mono.end());
+
+    const double step = (double)fmt_rate_ / (double)OUT_RATE;
+    std::vector<int16_t> pcm;
+    pcm.reserve(static_cast<size_t>(mono.size() / step) + 4);
+
+    // Need samples at indices [i1-1 .. i1+2]; stop while i1+2 is in range.
+    while (rs_pos_ + 2.0 < (double)rs_buf_.size()) {
+        const int   i1 = static_cast<int>(rs_pos_);
+        const float t  = static_cast<float>(rs_pos_ - i1);
+        const float p0 = rs_buf_[i1 - 1], p1 = rs_buf_[i1];
+        const float p2 = rs_buf_[i1 + 1], p3 = rs_buf_[i1 + 2];
+        const float a = -0.5f*p0 + 1.5f*p1 - 1.5f*p2 + 0.5f*p3;
+        const float b =       p0 - 2.5f*p1 + 2.0f*p2 - 0.5f*p3;
+        const float c = -0.5f*p0            + 0.5f*p2;
+        float v = (((a*t + b)*t + c)*t + p1) * g;
         if (v >  1.0f) v =  1.0f;
         if (v < -1.0f) v = -1.0f;
-        pcm[i] = static_cast<int16_t>(v * 32767.0f);
+        pcm.push_back(static_cast<int16_t>(v * 32767.0f));
+        rs_pos_ += step;
+    }
+
+    // Drop consumed samples but keep one ahead of i1 as history (p0) for the
+    // next call; carry the fractional phase so there is no boundary seam.
+    const int keep_from = static_cast<int>(rs_pos_) - 1;
+    if (keep_from > 0) {
+        rs_buf_.erase(rs_buf_.begin(), rs_buf_.begin() + keep_from);
+        rs_pos_ -= keep_from;
+    }
+    // Guard against unbounded growth if the consumer ever stalls.
+    if (rs_buf_.size() > 8192) {
+        rs_buf_.clear();
+        rs_pos_ = 1.0;
     }
     return pcm;
 }
@@ -787,14 +810,37 @@ void AudioPlayback::play_opus(int speaker_id, const uint8_t* opus_data,
         DWORD now = GetTickCount();
         if (sp->last_recv > 0) {
             float iat_ms  = static_cast<float>(now - sp->last_recv);
-            if (iat_ms > 200.f) {
-                // Long gap — reset jitter so re-entry doesn't stall on max pre-buffer.
+            if (iat_ms > 500.f) {
+                // True silence gap (> 500 ms) — the speaker released PTT and this
+                // is a fresh utterance (the seq stream was reset upstream). Start
+                // shallow for low latency; the adaptive logic will deepen again
+                // if the link is jittery.
                 sp->jitter_ms_       = 0.0f;
                 sp->adaptive_target_ = JITTER_MIN;
+            } else if (iat_ms > 60.f) {
+                // Mid-speech stall (60–500 ms late): this is a TCP retransmit
+                // hiccup, NOT a new utterance. Previously we reset the target to
+                // the minimum here — throwing away the buffer defense exactly when
+                // it was needed, so the *next* stall underran again. Instead,
+                // immediately DEEPEN the buffer to cover stalls of this size, then
+                // let it decay slowly via the release path below.
+                const float late = iat_ms - 20.f;
+                if (late > sp->jitter_ms_) sp->jitter_ms_ = late;   // fast grab
+                int t = static_cast<int>(sp->jitter_ms_ / 20.f) + 1;
+                if (t < JITTER_MIN)        t = JITTER_MIN;
+                if (t > JITTER_TARGET_MAX) t = JITTER_TARGET_MAX;
+                sp->adaptive_target_ = t;
+                float prev_stat = rx_jitter_ms_stat_.load(std::memory_order_relaxed);
+                rx_jitter_ms_stat_.store(prev_stat * 0.90f + sp->jitter_ms_ * 0.10f, std::memory_order_relaxed);
             } else {
                 float jitter = (iat_ms > 20.f) ? (iat_ms - 20.f) : (20.f - iat_ms);
-                // EWMA: smooth jitter estimate
-                sp->jitter_ms_ = 0.90f * sp->jitter_ms_ + 0.10f * jitter;
+                // Asymmetric EWMA (WebRTC NetEQ style): fast attack, slow release.
+                // Grow the target immediately on rising jitter, shrink only after
+                // the link has been calm for a while, so brief hiccups don't keep
+                // collapsing the buffer back to the floor.
+                const float w = (jitter > sp->jitter_ms_) ? 0.50f   // attack
+                                                          : 0.04f;  // release
+                sp->jitter_ms_ = (1.0f - w) * sp->jitter_ms_ + w * jitter;
                 float prev_stat = rx_jitter_ms_stat_.load(std::memory_order_relaxed);
                 rx_jitter_ms_stat_.store(prev_stat * 0.90f + sp->jitter_ms_ * 0.10f, std::memory_order_relaxed);
 
@@ -860,7 +906,14 @@ void AudioPlayback::render_loop() {
                     frame = sp->jqueue.front();
                     have_frame = true;
                 } else if (!sp->buffering && sp->jqueue.empty()) {
+                    // Underrun: we ran the queue dry mid-playout. That is direct
+                    // evidence the target was too shallow for this link, so bump
+                    // it one frame (capped) before re-buffering. Repeated
+                    // underruns ratchet the buffer up until playout is stable,
+                    // instead of collapsing back to the floor each time.
                     sp->buffering = true;
+                    if (sp->adaptive_target_ < JITTER_TARGET_MAX)
+                        sp->adaptive_target_++;
                 }
             }
 
@@ -895,31 +948,20 @@ bool AudioPlayback::write_pcm_frame(SpeakerStream& s,
                                      const int16_t* pcm, UINT32 n_samples,
                                      float volume, float pan, float rear_attn) {
     constexpr DWORD  IN_RATE = 48000;
-    const     float  GAIN    = 1.10f;  // mild trim boost; keeps playback cleaner at peaks
+    // No make-up boost: the TX soft-limiter already pushes peaks up to ~0.99,
+    // so a 1.10x here drove them to ~1.09 and hard-clipped every loud frame —
+    // an always-on distortion source. Unity keeps playback clean; users raise
+    // the speaker-gain slider if they want it louder.
+    const     float  GAIN    = 1.0f;
 
     float gain_l = 1.0f, gain_r = 1.0f;
     calc_pan_gains(pan, rear_attn, gain_l, gain_r);
 
-    UINT32 out_frames = (s.rate == IN_RATE)
-        ? n_samples
-        : static_cast<UINT32>((double)n_samples * s.rate / IN_RATE);
-
-    UINT32 buf_size = 0, padding = 0;
-    if (FAILED(s.client->GetBufferSize(&buf_size)))    return false;
-    if (FAILED(s.client->GetCurrentPadding(&padding))) return false;
-
-    UINT32 avail = buf_size - padding;
-    if (avail < out_frames) return false; // not enough room yet; keep frame queued
-
-    BYTE* dst_data = nullptr;
-    if (FAILED(s.render->GetBuffer(out_frames, &dst_data))) return false;
-
-    for (UINT32 i = 0; i < out_frames; i++) {
-        float mono = lerp_pcm(pcm, n_samples, IN_RATE, s.rate, i) * volume * GAIN;
-        // note: volume is already (speaker_vol * global_gain); GAIN is only a mild trim boost
+    // Write one resampled mono sample (value already pre-gain) into the device
+    // buffer at output index i, applying pan + the device sample format.
+    auto write_one = [&](BYTE* dst_data, UINT32 i, float mono) {
         float left  = mono * gain_l;
         float right = mono * gain_r;
-
         if (left  >  1.0f) left  =  1.0f;
         if (left  < -1.0f) left  = -1.0f;
         if (right >  1.0f) right =  1.0f;
@@ -930,39 +972,90 @@ bool AudioPlayback::write_pcm_frame(SpeakerStream& s,
             if (s.channels >= 2) {
                 d[i * s.channels + 0] = left;
                 d[i * s.channels + 1] = right;
-                for (WORD c = 2; c < s.channels; c++)
-                    d[i * s.channels + c] = 0.5f * (left + right);
-            } else {
-                d[i * s.channels] = 0.5f * (left + right);
-            }
+                for (WORD c = 2; c < s.channels; c++) d[i * s.channels + c] = 0.5f * (left + right);
+            } else d[i * s.channels] = 0.5f * (left + right);
         } else if (s.format.wBitsPerSample == 32) {
             int32_t* d = reinterpret_cast<int32_t*>(dst_data);
-            int32_t  sl = static_cast<int32_t>(left  * 2147483647.0f);
-            int32_t  sr = static_cast<int32_t>(right * 2147483647.0f);
+            int32_t sl = static_cast<int32_t>(left * 2147483647.0f);
+            int32_t sr = static_cast<int32_t>(right * 2147483647.0f);
             if (s.channels >= 2) {
                 d[i * s.channels + 0] = sl;
                 d[i * s.channels + 1] = sr;
-                for (WORD c = 2; c < s.channels; c++)
-                    d[i * s.channels + c] = static_cast<int32_t>((sl / 2) + (sr / 2));
-            } else {
-                d[i * s.channels] = static_cast<int32_t>((sl / 2) + (sr / 2));
-            }
+                for (WORD c = 2; c < s.channels; c++) d[i * s.channels + c] = static_cast<int32_t>((sl / 2) + (sr / 2));
+            } else d[i * s.channels] = static_cast<int32_t>((sl / 2) + (sr / 2));
         } else {
             int16_t* d = reinterpret_cast<int16_t*>(dst_data);
-            int16_t  sl = static_cast<int16_t>(left  * 32767.0f);
-            int16_t  sr = static_cast<int16_t>(right * 32767.0f);
+            int16_t sl = static_cast<int16_t>(left * 32767.0f);
+            int16_t sr = static_cast<int16_t>(right * 32767.0f);
             if (s.channels >= 2) {
                 d[i * s.channels + 0] = sl;
                 d[i * s.channels + 1] = sr;
-                for (WORD c = 2; c < s.channels; c++)
-                    d[i * s.channels + c] = static_cast<int16_t>((sl / 2) + (sr / 2));
-            } else {
-                d[i * s.channels] = static_cast<int16_t>((sl / 2) + (sr / 2));
-            }
+                for (WORD c = 2; c < s.channels; c++) d[i * s.channels + c] = static_cast<int16_t>((sl / 2) + (sr / 2));
+            } else d[i * s.channels] = static_cast<int16_t>((sl / 2) + (sr / 2));
         }
+    };
+
+    UINT32 buf_size = 0, padding = 0;
+    if (FAILED(s.client->GetBufferSize(&buf_size)))    return false;
+    if (FAILED(s.client->GetCurrentPadding(&padding))) return false;
+    const UINT32 avail = buf_size - padding;
+
+    // ── Device already at 48 kHz: no resampling ──────────────────────────────
+    if (s.rate == IN_RATE) {
+        if (avail < n_samples) return false; // keep frame queued until room
+        BYTE* dst_data = nullptr;
+        if (FAILED(s.render->GetBuffer(n_samples, &dst_data))) return false;
+        for (UINT32 i = 0; i < n_samples; i++)
+            write_one(dst_data, i, (pcm[i] * (1.0f / 32768.0f)) * volume * GAIN);
+        s.render->ReleaseBuffer(n_samples, 0);
+        return true;
     }
 
-    s.render->ReleaseBuffer(out_frames, 0);
+    // ── Streaming cubic resample (48 kHz → device rate) ──────────────────────
+    // Continuous across frames via s.rs_buf_ / s.rs_pos_. Compute how many output
+    // samples are producible from (leftover + this frame) WITHOUT appending yet,
+    // so that if the device buffer is full we can return false and retry with the
+    // frame still queued (no double-append).
+    const double step = (double)IN_RATE / (double)s.rate; // input samples per output
+    const size_t combined = s.rs_buf_.size() + n_samples;
+    UINT32 count = 0;
+    if ((double)combined > s.rs_pos_ + 2.0)
+        count = static_cast<UINT32>(((double)combined - 2.0 - s.rs_pos_) / step) + 1;
+
+    if (count > 0 && avail < count) return false; // no room; keep frame queued
+
+    // Commit: append this frame's samples to the resampler buffer.
+    s.rs_buf_.reserve(s.rs_buf_.size() + n_samples);
+    for (UINT32 i = 0; i < n_samples; i++)
+        s.rs_buf_.push_back(pcm[i] * (1.0f / 32768.0f));
+
+    if (count == 0) return true; // not enough samples yet; buffered for next call
+
+    BYTE* dst_data = nullptr;
+    if (FAILED(s.render->GetBuffer(count, &dst_data)))
+        return true; // samples are buffered in rs_buf_; will be written next call
+
+    for (UINT32 k = 0; k < count; k++) {
+        const int   i1 = static_cast<int>(s.rs_pos_);
+        const float t  = static_cast<float>(s.rs_pos_ - i1);
+        const float p0 = s.rs_buf_[i1 - 1], p1 = s.rs_buf_[i1];
+        const float p2 = s.rs_buf_[i1 + 1], p3 = s.rs_buf_[i1 + 2];
+        const float a = -0.5f*p0 + 1.5f*p1 - 1.5f*p2 + 0.5f*p3;
+        const float b =       p0 - 2.5f*p1 + 2.0f*p2 - 0.5f*p3;
+        const float c = -0.5f*p0            + 0.5f*p2;
+        const float v = (((a*t + b)*t + c)*t + p1);
+        write_one(dst_data, k, v * volume * GAIN);
+        s.rs_pos_ += step;
+    }
+    s.render->ReleaseBuffer(count, 0);
+
+    // Drop consumed samples, keep one as history (p0) and carry the phase.
+    const int keep_from = static_cast<int>(s.rs_pos_) - 1;
+    if (keep_from > 0) {
+        s.rs_buf_.erase(s.rs_buf_.begin(), s.rs_buf_.begin() + keep_from);
+        s.rs_pos_ -= keep_from;
+    }
+    if (s.rs_buf_.size() > 8192) { s.rs_buf_.clear(); s.rs_pos_ = 1.0; }
     return true;
 }
 
@@ -1101,6 +1194,8 @@ void AudioPlayback::flush_all() {
         sp->last_seq = 0;
         sp->lpf_z_ = 0.0f;
         sp->lpf_a_ = 1.0f;
+        sp->rs_buf_.clear();
+        sp->rs_pos_ = 1.0;
         if (sp->dec) {
             opus_decoder_ctl(sp->dec, OPUS_RESET_STATE);
         }
