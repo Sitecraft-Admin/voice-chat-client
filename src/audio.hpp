@@ -125,10 +125,8 @@ private:
     // Absolute maximum queue depth (hard cap: 200 ms)
     static constexpr int    JITTER_MAX_ABS = 10;
     static constexpr int    MAX_CONCEAL_FRAMES = JITTER_MAX_ABS;
-    // Minimum adaptive target (lowest latency we will allow)
-    static constexpr int    JITTER_MIN     = 1;
-    // Maximum adaptive target
-    static constexpr int    JITTER_TARGET_MAX = 5;
+    static constexpr int    JITTER_MIN     = 3;
+    static constexpr int    JITTER_TARGET_MAX = 8;
 
     bool init_stream(int speaker_id);   // must be called with streams_mtx_ held
 
@@ -155,7 +153,7 @@ private:
 
         // Adaptive jitter buffer
         float jitter_ms_      = 0.0f;  // EWMA of |inter-arrival - 20 ms|
-        int   adaptive_target_= 2;     // current target depth (frames)
+        int   adaptive_target_= JITTER_MIN; // current target depth (frames)
 
         // Distance-based 1-pole IIR low-pass filter (per-speaker state)
         float lpf_z_  = 0.0f;  // IIR state

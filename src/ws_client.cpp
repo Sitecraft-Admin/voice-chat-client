@@ -199,12 +199,18 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
     }
 
     {
+        int nodelay = 1;
+        setsockopt(s, IPPROTO_TCP, TCP_NODELAY,
+                   reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+    }
+
+    {
         std::lock_guard<std::mutex> socket_lock(socket_mtx_);
         socket_ = s;
         connected_ = true;
     }
 
-    dbglog("[rawtcp] connect OK");
+    dbglog("[rawtcp] connect OK (TCP_NODELAY)");
     send_thread_ = std::thread([this] { send_loop(); });
     recv_thread_ = std::thread([this] { recv_loop(); });
     return true;

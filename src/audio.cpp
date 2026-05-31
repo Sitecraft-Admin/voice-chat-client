@@ -790,7 +790,7 @@ void AudioPlayback::play_opus(int speaker_id, const uint8_t* opus_data,
             if (iat_ms > 200.f) {
                 // Long gap — reset jitter so re-entry doesn't stall on max pre-buffer.
                 sp->jitter_ms_       = 0.0f;
-                sp->adaptive_target_ = 2;
+                sp->adaptive_target_ = JITTER_MIN;
             } else {
                 float jitter = (iat_ms > 20.f) ? (iat_ms - 20.f) : (20.f - iat_ms);
                 // EWMA: smooth jitter estimate
@@ -1094,7 +1094,8 @@ void AudioPlayback::flush_all() {
         sp->buffering = true;
         sp->last_recv = 0;
         sp->jitter_ms_ = 0.0f;
-        sp->adaptive_target_ = 1; // 1 frame (20 ms) pre-buffer after channel switch
+        sp->adaptive_target_ = JITTER_MIN; // pre-buffer floor after channel switch
+                                           // (was 1 frame = 20 ms, too tight → underrun)
         sp->smooth_vol_ = 1.0f;
         sp->have_last_seq = false;
         sp->last_seq = 0;

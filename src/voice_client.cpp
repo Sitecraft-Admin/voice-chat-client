@@ -295,24 +295,18 @@ void VoiceClient::init_opus_encoder() {
         char b[64]; sprintf_s(b, "[opus] encoder create FAILED err=%d", err); dbglog(b);
         return;
     }
-    // 40 kbps VBR: Opus voice at this bitrate is perceptually transparent for
-    // speech and saves ~65% bandwidth vs the old 112 kbps max.
-    opus_encoder_ctl(opus_enc_, OPUS_SET_BITRATE(48000));
+    opus_encoder_ctl(opus_enc_, OPUS_SET_BITRATE(64000));
     opus_encoder_ctl(opus_enc_, OPUS_SET_VBR(1));
-    opus_encoder_ctl(opus_enc_, OPUS_SET_VBR_CONSTRAINT(0));
-    // Complexity 8: imperceptible quality difference vs 10 for speech,
-    // saves ~20% encode CPU — important when running inside a game process.
+    opus_encoder_ctl(opus_enc_, OPUS_SET_VBR_CONSTRAINT(1));
     opus_encoder_ctl(opus_enc_, OPUS_SET_COMPLEXITY(8));
     opus_encoder_ctl(opus_enc_, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-    // Super-wideband (0–12 kHz): spreads 40 kbps more efficiently than fullband
-    // while preserving speech intelligibility and presence.
-    opus_encoder_ctl(opus_enc_, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
-    opus_encoder_ctl(opus_enc_, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
+    opus_encoder_ctl(opus_enc_, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_SUPERWIDEBAND));
+    opus_encoder_ctl(opus_enc_, OPUS_SET_MAX_BANDWIDTH(OPUS_BANDWIDTH_SUPERWIDEBAND));
     opus_encoder_ctl(opus_enc_, OPUS_SET_DTX(0));
     opus_encoder_ctl(opus_enc_, OPUS_SET_INBAND_FEC(1));
-    opus_encoder_ctl(opus_enc_, OPUS_SET_PACKET_LOSS_PERC(2));
+    opus_encoder_ctl(opus_enc_, OPUS_SET_PACKET_LOSS_PERC(5));
     opus_encoder_ctl(opus_enc_, OPUS_SET_LSB_DEPTH(16));
-    dbglog("[opus] encoder ready (48kbps FB VBR complexity=8 FEC no-DTX)");
+    dbglog("[opus] encoder ready (64kbps SWB constrained-VBR complexity=8 FEC5 no-DTX)");
 }
 
 void VoiceClient::destroy_opus_encoder() {
