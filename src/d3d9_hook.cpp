@@ -133,18 +133,23 @@ static void do_frame(LPDIRECT3DDEVICE9 pDevice) {
 }
 
 HRESULT APIENTRY hkEndScene(LPDIRECT3DDEVICE9 pDevice) {
+    // Render the overlay once, inside the scene (after the game's draws). Do NOT
+    // reset g_rendered_this_frame here — Present is the real frame boundary and
+    // resets it. Resetting here let Present re-run do_frame, rendering the whole
+    // overlay TWICE per frame, which doubled the per-frame cost and jittered the
+    // game's frame pacing (visible as walk/map-scroll stutter).
     if (g_installed && !g_rendered_this_frame) {
         g_rendered_this_frame = true;
         do_frame(pDevice);
     }
-    HRESULT hr = oEndScene(pDevice); // direct call — no trampoline
-    g_rendered_this_frame = false;
-    return hr;
+    return oEndScene(pDevice); // direct call — no trampoline
 }
 
 HRESULT APIENTRY hkPresent(LPDIRECT3DDEVICE9 pDevice,
                            const RECT* pSrcRect, const RECT* pDstRect,
                            HWND hWnd, const RGNDATA* pDirtyRegion) {
+    // Fallback render only if EndScene wasn't used this frame. Present is the
+    // frame boundary, so reset the once-per-frame guard here.
     if (g_installed && !g_rendered_this_frame) {
         g_rendered_this_frame = true;
         do_frame(pDevice);

@@ -233,7 +233,7 @@ private:
     std::atomic<int> server_pos_x_{ 0 };
     std::atomic<int> server_pos_y_{ 0 };
 
-    std::wstring server_host_ = L"103.253.75.215";
+    std::wstring server_host_ = L"127.0.0.1";
     INTERNET_PORT server_port_ = 7000;
     std::string  client_secret_ = "";
 
