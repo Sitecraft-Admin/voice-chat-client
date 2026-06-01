@@ -168,6 +168,11 @@ private:
     std::atomic<bool>    no_license_{ false };         // server requires license and we don't have one
     std::atomic<bool>    flood_banned_{ false };       // audio flood ban — backoff reconnect until expiry
     std::atomic<DWORD>   flood_ban_until_tick_{ 0 };  // GetTickCount() when ban expires
+    // Backoff after a kick that means "you are not validly in the game right
+    // now" (another char took the account, or no map advisory). Without this the
+    // DLL reconnects in ~0.5s and immediately gets kicked again — a tight churn
+    // loop (and, with two machines on one account, a kick ping-pong war).
+    std::atomic<DWORD>   reconnect_backoff_until_{ 0 };
 
     void init_opus_encoder();
     void destroy_opus_encoder();
@@ -228,7 +233,7 @@ private:
     std::atomic<int> server_pos_x_{ 0 };
     std::atomic<int> server_pos_y_{ 0 };
 
-    std::wstring server_host_ = L"127.0.0.1";
+    std::wstring server_host_ = L"103.253.75.215";
     INTERNET_PORT server_port_ = 7000;
     std::string  client_secret_ = "";
 

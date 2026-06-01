@@ -584,6 +584,7 @@ void VoiceClient::init() {
     no_license_           = false;
     flood_banned_         = false;
     flood_ban_until_tick_ = 0;
+    reconnect_backoff_until_ = 0;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
     reconnecting_ = false;
     init_opus_encoder();
@@ -758,6 +759,16 @@ void VoiceClient::reconnect_loop() {
         }
         flood_banned_ = false;
     }
+    // Account/advisory-conflict backoff: wait out the cooldown before retrying
+    // so we don't churn or ping-pong with another machine on the same account.
+    {
+        const DWORD until = reconnect_backoff_until_.load();
+        while (running_) {
+            const DWORD now = GetTickCount();
+            if ((int32_t)(until - now) <= 0) break;
+            Sleep((until - now) < 3000 ? (until - now) : 3000);
+        }
+    }
     // First attempt is fast (500 ms) so char-switch feels instant.
     // On repeated failures (server down) the delay backs off to 10 s.
     int delay = 500;
@@ -866,6 +877,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         // while disconnected would stay locally in the old state after reconnect.
         voice_banned_.store(false);
         no_license_.store(false);
+        reconnect_backoff_until_.store(0); // auth succeeded — clear any conflict backoff
         dbglog("[auth] auth_ok");
         const uint16_t udp_port = static_cast<uint16_t>(j.value("udp_port", 0));
         const uint64_t udp_token = j.value("udp_token", static_cast<uint64_t>(0));
@@ -1036,6 +1048,13 @@ void VoiceClient::on_text_message(const std::string& msg) {
             char_switch_pending_ = true;
         else if (err == "session replaced by new login")
             session_replaced_ = true;
+        else if (err == "stale account session" || err == "no active map session") {
+            // Not validly in game right now (another char took the account, or the
+            // map server has no advisory for us). Back off before reconnecting so
+            // we don't tight-loop / ping-pong with another machine on this account.
+            reconnect_backoff_until_ = GetTickCount() + 15000;
+            dbglog("[ws] account/advisory conflict — backing off 15s before reconnect");
+        }
     }
     else if (type == "admin_banned") {
         voice_banned_ = true;
