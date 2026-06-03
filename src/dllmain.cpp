@@ -1,4 +1,5 @@
 #include "overlay.hpp"
+#include "external_overlay.hpp"
 #include "voice_client.hpp"
 #include "d3d9_hook.hpp"
 #include "dbglog.hpp"
@@ -72,6 +73,14 @@ static DWORD WINAPI MainThread(LPVOID) {
     g_at_running.store(true);
     g_at_thread = CreateThread(nullptr, 0, AntiTamperThread, nullptr, 0, nullptr);
 
+    // Start the external Discord-style overlay BEFORE installing the D3D9 hook.
+    // start() immediately claims UI ownership (ExternalOverlay::owns_ui()), so by
+    // the time the hook renders its first frame the in-process overlay knows to
+    // stay silent and never inits ImGui on the game device. If the external path
+    // fails, it clears ownership and the in-process overlay takes over.
+    ExternalOverlay::start();
+    dbglog("ExternalOverlay::start called");
+
     dbglog("Calling D3D9Hook::install");
     bool hook_ok = D3D9Hook::install();
     dbglog(hook_ok ? "D3D9Hook::install OK" : "D3D9Hook::install FAILED");
@@ -102,6 +111,7 @@ static void ShutdownVoiceClient() {
         g_at_thread = nullptr;
     }
 
+    ExternalOverlay::stop();
     VoiceClient::get().shutdown();
     D3D9Hook::uninstall();
 }

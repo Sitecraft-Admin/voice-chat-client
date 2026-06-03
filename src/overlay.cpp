@@ -9,6 +9,7 @@
 #include <shlwapi.h>
 #include <cstdio>
 #include <cmath>
+#include <cfloat>
 #include <string>
 #include <memory>
 #include <vector>
@@ -44,6 +45,23 @@ static bool    g_settings_open = false;
 static HWND    g_hwnd          = nullptr;
 static WNDPROC g_old_wndproc   = nullptr;
 static LPDIRECT3DDEVICE9 g_ui_device = nullptr;
+
+// ── External-overlay input mode ───────────────────────────────────────────────
+// When the Discord-style external overlay drives rendering, ImGui input does not
+// come from the game window's Win32 messages. Instead the external overlay feeds
+// the cursor position + button state every frame (it reads them globally via
+// GetCursorPos / GetAsyncKeyState) and we apply them manually in render(). In
+// this mode the Win32 backend + wndproc hook are NOT installed.
+static bool  g_external_mode = false;
+static float g_ext_w = 0.f, g_ext_h = 0.f;
+static float g_ext_mx = -FLT_MAX, g_ext_my = -FLT_MAX;
+static bool  g_ext_lmb = false, g_ext_rmb = false;
+static float g_ext_dt = 1.f / 60.f;
+static bool  g_ext_want_capture = false; // mouse: set after each frame; read by external
+static bool  g_ext_want_text    = false; // keyboard: WantTextInput; for input swallow
+static bool  g_has_draw  = false;        // anything drawn this frame?
+static float g_draw_x0 = 0, g_draw_y0 = 0, g_draw_x1 = 0, g_draw_y1 = 0; // draw bbox
+static bool  g_ext_hi_fps = false;       // overlay has interactive/animating content
 static ImVec2  g_badge_hit_min = ImVec2(0.f, 0.f);
 static ImVec2  g_badge_hit_max = ImVec2(0.f, 0.f);
 static ImVec2  g_channel_hit_min = ImVec2(0.f, 0.f);
@@ -1990,21 +2008,27 @@ bool init(LPDIRECT3DDEVICE9 pDevice) {
     if (!font_ok)
         io.Fonts->AddFontDefault();
 
-    if (!ImGui_ImplWin32_Init(g_hwnd)) {
-        dbglog("[overlay] ImGui_ImplWin32_Init FAILED");
-        ImGui::DestroyContext();
-        return false;
+    // In external-overlay mode we do NOT use the Win32 input backend or hook the
+    // window proc — input is fed manually each frame (see render()).
+    if (!g_external_mode) {
+        if (!ImGui_ImplWin32_Init(g_hwnd)) {
+            dbglog("[overlay] ImGui_ImplWin32_Init FAILED");
+            ImGui::DestroyContext();
+            return false;
+        }
     }
     if (!ImGui_ImplDX9_Init(pDevice)) {
         dbglog("[overlay] ImGui_ImplDX9_Init FAILED");
-        ImGui_ImplWin32_Shutdown();
+        if (!g_external_mode) ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         return false;
     }
 
-    g_old_wndproc = reinterpret_cast<WNDPROC>(
-        SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC,
-                          reinterpret_cast<LONG_PTR>(hkOverlayWndProc)));
+    if (!g_external_mode) {
+        g_old_wndproc = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC,
+                              reinterpret_cast<LONG_PTR>(hkOverlayWndProc)));
+    }
     g_imgui_inited = true;
     g_visible      = true;
 
@@ -2057,7 +2081,7 @@ void shutdown() {
     g_ui_device     = nullptr;
 
     ImGui_ImplDX9_Shutdown();
-    ImGui_ImplWin32_Shutdown();
+    if (!g_external_mode) ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
     g_hwnd         = nullptr;
     g_imgui_inited = false;
@@ -2079,7 +2103,22 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
     }
 
     ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
+    if (g_external_mode) {
+        // Manual input: the external overlay supplies cursor + buttons + size.
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(g_ext_w, g_ext_h);
+        io.DeltaTime   = g_ext_dt > 0.f ? g_ext_dt : 1.f / 60.f;
+        io.AddMousePosEvent(g_ext_mx, g_ext_my);
+        io.AddMouseButtonEvent(0, g_ext_lmb);
+        io.AddMouseButtonEvent(1, g_ext_rmb);
+    } else {
+        ImGui_ImplWin32_NewFrame();
+        // The Win32 backend derives DeltaTime from QueryPerformanceCounter; the
+        // first frame after (re)init — or two NewFrames within one timer tick —
+        // can yield 0, which trips ImGui's "Need a positive DeltaTime!" assert.
+        ImGuiIO& io = ImGui::GetIO();
+        if (io.DeltaTime <= 0.f) io.DeltaTime = 1.f / 60.f;
+    }
     ImGui::NewFrame();
 
     auto& vc = VoiceClient::get();
@@ -2101,9 +2140,135 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
     if (g_whisper_popup)             draw_whisper_popup();
     if (g_call_popup && in_game)     draw_call_popup();
 
+    // Capture whether ImGui wants the mouse/keyboard this frame so the external
+    // overlay can toggle click-through and decide whether to swallow keystrokes.
+    g_ext_want_capture = ImGui::GetIO().WantCaptureMouse;
+    g_ext_want_text    = ImGui::GetIO().WantTextInput;
+
+    // Decide if the overlay has animating / interactive content this frame so the
+    // external overlay can render at full rate now and idle slowly otherwise.
+    g_ext_hi_fps = g_ext_want_capture || g_settings_open || g_call_popup ||
+                   g_whisper_popup || vc.is_ptt_active() || vc.is_locally_talking() ||
+                   !vc.get_active_speakers().empty();
+
     ImGui::EndFrame();
     ImGui::Render();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    ImDrawData* dd = ImGui::GetDrawData();
+    ImGui_ImplDX9_RenderDrawData(dd);
+
+    // Compute the bounding box of everything actually drawn this frame, so the
+    // external overlay only reads back + blits that region (not the whole screen).
+    // We use per-vertex positions for a tight box (clip rects can be display-wide).
+    float x0 = FLT_MAX, y0 = FLT_MAX, x1 = -FLT_MAX, y1 = -FLT_MAX;
+    for (int i = 0; i < dd->CmdListsCount; ++i) {
+        const ImDrawList* cl = dd->CmdLists[i];
+        const ImDrawVert* vb = cl->VtxBuffer.Data;
+        for (int v = 0; v < cl->VtxBuffer.Size; ++v) {
+            const ImVec2& p = vb[v].pos;
+            if (p.x < x0) x0 = p.x; if (p.y < y0) y0 = p.y;
+            if (p.x > x1) x1 = p.x; if (p.y > y1) y1 = p.y;
+        }
+    }
+    if (x1 >= x0 && y1 >= y0) {
+        g_draw_x0 = x0; g_draw_y0 = y0; g_draw_x1 = x1; g_draw_y1 = y1;
+        g_has_draw = true;
+    } else {
+        g_has_draw = false;
+    }
+}
+
+bool get_draw_bounds(int& x0, int& y0, int& x1, int& y1) {
+    if (!g_has_draw) return false;
+    x0 = (int)g_draw_x0; y0 = (int)g_draw_y0;
+    x1 = (int)g_draw_x1 + 1; y1 = (int)g_draw_y1 + 1;
+    return true;
+}
+
+void set_external_mode(bool on) { g_external_mode = on; }
+
+void feed_external_input(float w, float h, float mx, float my,
+                         bool lmb, bool rmb, float dt) {
+    g_ext_w = w; g_ext_h = h;
+    g_ext_mx = mx; g_ext_my = my;
+    g_ext_lmb = lmb; g_ext_rmb = rmb;
+    g_ext_dt = dt;
+}
+
+bool external_wants_mouse()       { return g_ext_want_capture; }
+bool external_wants_text_input()  { return g_ext_want_text; }
+bool needs_high_fps()             { return g_ext_hi_fps; }
+bool is_inited()                  { return g_imgui_inited; }
+bool is_external_mode()           { return g_external_mode; }
+
+// ── Map a Win32 virtual-key to an ImGuiKey (for the external keyboard hook) ────
+static ImGuiKey vk_to_imgui_key(int vk) {
+    if (vk >= 'A' && vk <= 'Z') return (ImGuiKey)(ImGuiKey_A + (vk - 'A'));
+    if (vk >= '0' && vk <= '9') return (ImGuiKey)(ImGuiKey_0 + (vk - '0'));
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9)
+        return (ImGuiKey)(ImGuiKey_Keypad0 + (vk - VK_NUMPAD0));
+    if (vk >= VK_F1 && vk <= VK_F12)
+        return (ImGuiKey)(ImGuiKey_F1 + (vk - VK_F1));
+    switch (vk) {
+        case VK_TAB:      return ImGuiKey_Tab;
+        case VK_LEFT:     return ImGuiKey_LeftArrow;
+        case VK_RIGHT:    return ImGuiKey_RightArrow;
+        case VK_UP:       return ImGuiKey_UpArrow;
+        case VK_DOWN:     return ImGuiKey_DownArrow;
+        case VK_PRIOR:    return ImGuiKey_PageUp;
+        case VK_NEXT:     return ImGuiKey_PageDown;
+        case VK_HOME:     return ImGuiKey_Home;
+        case VK_END:      return ImGuiKey_End;
+        case VK_INSERT:   return ImGuiKey_Insert;
+        case VK_DELETE:   return ImGuiKey_Delete;
+        case VK_BACK:     return ImGuiKey_Backspace;
+        case VK_SPACE:    return ImGuiKey_Space;
+        case VK_RETURN:   return ImGuiKey_Enter;
+        case VK_ESCAPE:   return ImGuiKey_Escape;
+        case VK_OEM_7:    return ImGuiKey_Apostrophe;
+        case VK_OEM_COMMA:return ImGuiKey_Comma;
+        case VK_OEM_MINUS:return ImGuiKey_Minus;
+        case VK_OEM_PERIOD:return ImGuiKey_Period;
+        case VK_OEM_2:    return ImGuiKey_Slash;
+        case VK_OEM_1:    return ImGuiKey_Semicolon;
+        case VK_OEM_PLUS: return ImGuiKey_Equal;
+        case VK_OEM_4:    return ImGuiKey_LeftBracket;
+        case VK_OEM_5:    return ImGuiKey_Backslash;
+        case VK_OEM_6:    return ImGuiKey_RightBracket;
+        case VK_OEM_3:    return ImGuiKey_GraveAccent;
+        case VK_LSHIFT:   return ImGuiKey_LeftShift;
+        case VK_RSHIFT:   return ImGuiKey_RightShift;
+        case VK_SHIFT:    return ImGuiKey_LeftShift;
+        case VK_LCONTROL: return ImGuiKey_LeftCtrl;
+        case VK_RCONTROL: return ImGuiKey_RightCtrl;
+        case VK_CONTROL:  return ImGuiKey_LeftCtrl;
+        case VK_LMENU:    return ImGuiKey_LeftAlt;
+        case VK_RMENU:    return ImGuiKey_RightAlt;
+        case VK_MENU:     return ImGuiKey_LeftAlt;
+        case VK_LWIN:     return ImGuiKey_LeftSuper;
+        case VK_RWIN:     return ImGuiKey_RightSuper;
+        default:          return ImGuiKey_None;
+    }
+}
+
+void feed_key_event(int vk, bool down) {
+    ImGuiKey k = vk_to_imgui_key(vk);
+    if (k != ImGuiKey_None) ImGui::GetIO().AddKeyEvent(k, down);
+}
+
+void feed_char_utf16(unsigned short c) {
+    ImGui::GetIO().AddInputCharacterUTF16((ImWchar16)c);
+}
+
+void feed_mouse_wheel(float wheel_y) {
+    ImGui::GetIO().AddMouseWheelEvent(0.f, wheel_y);
+}
+
+void toggle_badge() { g_badge_visible = !g_badge_visible; }
+
+void toggle_call_popup() {
+    if (!VoiceClient::get().is_in_game()) return;
+    if (!g_call_popup) { g_call_popup = true; g_call_name[0] = '\0'; }
+    else               { g_call_popup = false; }
 }
 
 } // namespace Overlay

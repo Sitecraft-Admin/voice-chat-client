@@ -1,5 +1,6 @@
 #include "d3d9_hook.hpp"
 #include "overlay.hpp"
+#include "external_overlay.hpp"
 #include "dbglog.hpp"
 #include <Windows.h>
 #include <atomic>
@@ -106,8 +107,43 @@ static void temp_hook_remove() {
 // ── Final hooks (vtable-based, no trampoline) ─────────────────────
 
 static bool g_rendered_this_frame = false;
+static std::atomic<bool> g_game_windowed{ true };
+
+// Query the device's swapchain to learn windowed vs exclusive-fullscreen state.
+static void capture_windowed_state(LPDIRECT3DDEVICE9 pDevice) {
+    IDirect3DSwapChain9* sc = nullptr;
+    if (SUCCEEDED(pDevice->GetSwapChain(0, &sc)) && sc) {
+        D3DPRESENT_PARAMETERS pp{};
+        if (SUCCEEDED(sc->GetPresentParameters(&pp)))
+            g_game_windowed.store(pp.Windowed != FALSE);
+        sc->Release();
+    }
+}
 
 static void do_frame(LPDIRECT3DDEVICE9 pDevice) {
+    // Track the device pointer + windowed state cheaply on the first frame, even
+    // when the external overlay owns the UI — we need it for fullscreen detection.
+    if (!g_game_device) {
+        pDevice->AddRef();
+        g_game_device = pDevice;
+        capture_windowed_state(pDevice);
+    }
+
+    // When the external Discord-style overlay owns the UI, it renders on its own
+    // D3D9 device in a separate window — so we must NOT draw in the game's render
+    // pipeline (zero impact on the game's frame pacing). If the in-process overlay
+    // had been initialized (e.g. during a prior exclusive-fullscreen fallback),
+    // tear it down here on the GAME thread so its device objects are released by
+    // the same thread that created them (no cross-thread D3D9 release).
+    if (ExternalOverlay::owns_ui()) {
+        // Tear down ONLY an in-process-initialized overlay (left over from a prior
+        // exclusive-fullscreen fallback). Never touch the external overlay's own
+        // ImGui — it lives on the external thread/device.
+        if (Overlay::is_inited() && !Overlay::is_external_mode())
+            Overlay::shutdown();
+        return;
+    }
+
     if (!g_game_device) {
         dbglog("[D3D] first device, init overlay");
         pDevice->AddRef();
@@ -161,11 +197,19 @@ HRESULT APIENTRY hkPresent(LPDIRECT3DDEVICE9 pDevice,
 
 HRESULT APIENTRY hkReset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pPP) {
     bool is_game = g_installed && (pDevice == g_game_device);
-    if (is_game) Overlay::on_reset_before();
+    // Track windowed/fullscreen transitions (used by the external overlay).
+    if (is_game && pPP)
+        g_game_windowed.store(pPP->Windowed != FALSE);
+    // Only invalidate/restore the in-process overlay's device objects when it
+    // actually owns them (i.e. it's the active renderer, not the external one).
+    bool inproc = is_game && Overlay::is_inited();
+    if (inproc) Overlay::on_reset_before();
     HRESULT hr = oReset(pDevice, pPP); // direct
-    if (is_game && SUCCEEDED(hr)) Overlay::on_reset_after(pDevice);
+    if (inproc && SUCCEEDED(hr)) Overlay::on_reset_after(pDevice);
     return hr;
 }
+
+bool D3D9Hook::is_game_windowed() { return g_game_windowed.load(); }
 
 // ── One-shot temp hook: fires once, then switches to vtable ──────
 
