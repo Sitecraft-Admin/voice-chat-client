@@ -9,6 +9,11 @@ namespace Overlay {
     void on_reset_before();
     void on_reset_after(LPDIRECT3DDEVICE9 pDevice);
 
+    // Frame-pacing stabilizer: number of nearly-invisible full-screen fill passes
+    // drawn each frame to steady RO's frame timing (fixes map-scroll stutter).
+    // 1 is enough on most machines; 0 disables. Configurable via overlay_pacing_fill.
+    void set_pacing_fill(int passes);
+
     // ── External-overlay integration ─────────────────────────────────────────
     // Enable before the first render() so init() skips the Win32 input backend.
     void set_external_mode(bool on);

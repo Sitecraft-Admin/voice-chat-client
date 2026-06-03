@@ -589,17 +589,13 @@ void run_loop() {
         g_input_seen = false;
         render_frame(cw, ch, p.x, p.y);
 
-        // ── Adaptive frame rate (render-on-demand) ──────────────────────────
-        // Ramp to full rate while the UI is interactive/animating (hovering UI,
-        // an open window, talking, or input arriving); idle slowly otherwise so
-        // we don't burn CPU/GPU redrawing a static voicebar. A short debounce
-        // keeps it from flip-flopping at the edges of activity.
-        static ULONGLONG last_active = 0;
-        ULONGLONG nowt = GetTickCount64();
-        if (Overlay::needs_high_fps() || g_input_seen)
-            last_active = nowt;
-        const bool fast = (nowt - last_active) < 400;  // 400 ms debounce
-        Sleep(fast ? 6 : 33);  // ~165 Hz when active, ~30 Hz when idle
+        // Keep a HIGH, steady update rate. A topmost layered window forces DWM to
+        // composite the game + overlay; if the overlay updates slowly (idle), the
+        // composition cadence desyncs from the scrolling game and the game itself
+        // visibly stutters during walking. The per-frame cost is tiny now that we
+        // only blit the UI bounding box, so a constant high rate is cheap.
+        // (Idle-throttling to ~30 Hz caused exactly that walk stutter.)
+        Sleep(5);  // ~165–200 Hz, steady
     }
 
     stop_input_hooks();

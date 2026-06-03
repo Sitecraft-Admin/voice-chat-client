@@ -62,6 +62,13 @@ static bool  g_ext_want_text    = false; // keyboard: WantTextInput; for input s
 static bool  g_has_draw  = false;        // anything drawn this frame?
 static float g_draw_x0 = 0, g_draw_y0 = 0, g_draw_x1 = 0, g_draw_y1 = 0; // draw bbox
 static bool  g_ext_hi_fps = false;       // overlay has interactive/animating content
+// Frame-pacing stabilizer: RO's frame timing is sensitive to per-frame GPU load.
+// With only the tiny voicebar drawn, frame time hovers right at the vsync
+// boundary and the map scroll judders; adding a small constant fill pushes it
+// past the boundary and the pacing becomes steady. We add N nearly-invisible
+// full-screen fill passes (cheap: 4 verts each, just fill-rate). Tunable per
+// machine via config (overlay_pacing_fill); 0 disables it.
+static int g_pacing_fill_passes = 1;
 static ImVec2  g_badge_hit_min = ImVec2(0.f, 0.f);
 static ImVec2  g_badge_hit_max = ImVec2(0.f, 0.f);
 static ImVec2  g_channel_hit_min = ImVec2(0.f, 0.f);
@@ -2140,6 +2147,16 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
     if (g_whisper_popup)             draw_whisper_popup();
     if (g_call_popup && in_game)     draw_call_popup();
 
+    // Frame-pacing stabilizer (see g_pacing_fill_passes note above).
+    if (g_pacing_fill_passes > 0 && in_game) {
+        ImGuiIO& tio = ImGui::GetIO();
+        ImDrawList* bg = ImGui::GetBackgroundDrawList();
+        // alpha 1/255 — ImGui skips fully-transparent fills, so use the minimum
+        // visible alpha (imperceptible ~0.4% tint) to force the fill-rate work.
+        for (int i = 0; i < g_pacing_fill_passes; ++i)
+            bg->AddRectFilled(ImVec2(0, 0), tio.DisplaySize, IM_COL32(0, 0, 0, 1));
+    }
+
     // Capture whether ImGui wants the mouse/keyboard this frame so the external
     // overlay can toggle click-through and decide whether to swallow keystrokes.
     g_ext_want_capture = ImGui::GetIO().WantCaptureMouse;
@@ -2183,6 +2200,8 @@ bool get_draw_bounds(int& x0, int& y0, int& x1, int& y1) {
     x1 = (int)g_draw_x1 + 1; y1 = (int)g_draw_y1 + 1;
     return true;
 }
+
+void set_pacing_fill(int passes) { g_pacing_fill_passes = passes < 0 ? 0 : passes; }
 
 void set_external_mode(bool on) { g_external_mode = on; }
 

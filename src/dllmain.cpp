@@ -6,6 +6,61 @@
 #include "anti_tamper.hpp"
 #include <Windows.h>
 #include <cstdio>
+#include <fstream>
+#include <string>
+
+// Overlay mode (read once at startup, before the D3D9 hook installs):
+//   default            → in-process overlay (draws inside the game; visible to
+//                        streamers / window-capture, but can stutter heavy scenes)
+//   overlay_external: 1 → external Discord-style window (smooth, but not captured
+//                        when sharing only the game window)
+static bool read_overlay_external() {
+    std::ifstream f("voice_client.conf");
+    if (!f.is_open()) return false;            // default: in-process (old) overlay
+    std::string line;
+    while (std::getline(f, line)) {
+        auto cm = line.find("//");
+        if (cm != std::string::npos) line = line.substr(0, cm);
+        auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string key = line.substr(0, colon);
+        std::string val = line.substr(colon + 1);
+        auto trim = [](std::string& s) {
+            size_t a = s.find_first_not_of(" \t\r\n");
+            size_t b = s.find_last_not_of(" \t\r\n");
+            s = (a == std::string::npos) ? "" : s.substr(a, b - a + 1);
+        };
+        trim(key); trim(val);
+        if (key == "overlay_external") return val == "1" || val == "true";
+    }
+    return false;
+}
+
+// Number of full-screen fill passes used to steady RO's frame pacing (fixes
+// map-scroll stutter). Default 1; raise it if a machine still stutters, 0 = off.
+static int read_pacing_fill() {
+    std::ifstream f("voice_client.conf");
+    if (!f.is_open()) return 1;
+    std::string line;
+    while (std::getline(f, line)) {
+        auto cm = line.find("//");
+        if (cm != std::string::npos) line = line.substr(0, cm);
+        auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string key = line.substr(0, colon);
+        std::string val = line.substr(colon + 1);
+        auto trim = [](std::string& s) {
+            size_t a = s.find_first_not_of(" \t\r\n");
+            size_t b = s.find_last_not_of(" \t\r\n");
+            s = (a == std::string::npos) ? "" : s.substr(a, b - a + 1);
+        };
+        trim(key); trim(val);
+        if (key == "overlay_pacing_fill") {
+            try { int n = std::stoi(val); return n < 0 ? 0 : n; } catch (...) { return 1; }
+        }
+    }
+    return 1;
+}
 
 extern "C" __declspec(dllexport) void VoiceAttach() {}
 
@@ -73,13 +128,21 @@ static DWORD WINAPI MainThread(LPVOID) {
     g_at_running.store(true);
     g_at_thread = CreateThread(nullptr, 0, AntiTamperThread, nullptr, 0, nullptr);
 
-    // Start the external Discord-style overlay BEFORE installing the D3D9 hook.
-    // start() immediately claims UI ownership (ExternalOverlay::owns_ui()), so by
-    // the time the hook renders its first frame the in-process overlay knows to
-    // stay silent and never inits ImGui on the game device. If the external path
-    // fails, it clears ownership and the in-process overlay takes over.
-    ExternalOverlay::start();
-    dbglog("ExternalOverlay::start called");
+    // Overlay mode: default is the in-process overlay (visible to streamers).
+    // Only start the external Discord-style overlay if explicitly requested in
+    // voice_client.conf (overlay_external: 1). Must start before the D3D9 hook so
+    // it can claim UI ownership before the first rendered frame.
+    if (read_overlay_external()) {
+        ExternalOverlay::start();
+        dbglog("ExternalOverlay::start called (overlay_external=1)");
+    } else {
+        dbglog("Using in-process overlay (default)");
+    }
+
+    // Frame-pacing stabilizer for the in-process overlay (fixes RO map-scroll
+    // stutter). Harmless for the external overlay (it gates on the in-process
+    // device anyway). Configurable via overlay_pacing_fill (default 1).
+    Overlay::set_pacing_fill(read_pacing_fill());
 
     dbglog("Calling D3D9Hook::install");
     bool hook_ok = D3D9Hook::install();
