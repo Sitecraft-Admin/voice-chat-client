@@ -66,6 +66,10 @@ HWND find_game_window() {
 }
 
 LRESULT CALLBACK overlay_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_SETCURSOR && LOWORD(lp) == HTCLIENT) {
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        return TRUE;
+    }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
@@ -480,6 +484,10 @@ void run_loop() {
     wc.lpfnWndProc   = overlay_wndproc;
     wc.hInstance     = GetModuleHandleW(nullptr);
     wc.lpszClassName = kClassName;
+    // Without a class cursor, hovering the window while it's interactive (click-
+    // through off) leaves the cursor undefined → Windows shows the busy/loading
+    // cursor. Use the standard arrow.
+    wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassExW(&wc);
 
     RECT gr{};
