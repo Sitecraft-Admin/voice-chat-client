@@ -538,15 +538,31 @@ AudioPlayback::~AudioPlayback() {
 }
 
 void AudioPlayback::set_device(const std::wstring& device_id) {
+    dbglog("[audio/rx] set_device: probing new device");
     if (!can_open_render_device(device_id)) {
         dbglog("[audio/rx] render device switch rejected - keeping previous device");
         return;
     }
 
+    dbglog("[audio/rx] set_device: stopping render thread");
     render_running_ = false;
-    if (render_thread_.joinable())
-        render_thread_.join();
+    if (render_thread_.joinable()) {
+        // Bound the join so a stuck WASAPI write (rare, but happens when the
+        // outgoing device was yanked or the driver wedged) cannot freeze the
+        // caller. After the grace window we detach and let the old thread
+        // wind down on its own — the new render thread will be created on
+        // the next play_opus call against the fresh device_id_.
+        HANDLE h = render_thread_.native_handle();
+        DWORD  r = WaitForSingleObject(h, 2000);
+        if (r == WAIT_OBJECT_0) {
+            render_thread_.join();
+        } else {
+            dbglog("[audio/rx] render_thread join TIMEOUT (2s) — detaching");
+            render_thread_.detach();
+        }
+    }
 
+    dbglog("[audio/rx] set_device: tearing down streams");
     // Tear down all existing streams — they'll be recreated on next play_opus call
     std::lock_guard<std::mutex> lk(streams_mtx_);
     {
@@ -554,6 +570,7 @@ void AudioPlayback::set_device(const std::wstring& device_id) {
         render_device_id_ = device_id;
     }
     streams_.clear();
+    dbglog("[audio/rx] set_device: done");
 }
 
 std::wstring AudioPlayback::get_device() const {

@@ -14,6 +14,11 @@
 #include <memory>
 #include <vector>
 #include <cstdint>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 
 #include "imgui.h"
 #include "backends/imgui_impl_dx9.h"
@@ -40,6 +45,67 @@ using namespace Gdiplus;
 
 static bool    g_imgui_inited  = false;
 static bool    g_visible       = true;
+
+// ── Device-switch worker ──────────────────────────────────────────────────
+// AudioCapture::set_device / AudioPlayback::set_device do a stop()+start()
+// internally; stop() can block up to 2 s waiting on the WASAPI thread to
+// exit. If we ran that from inside the ImGui Selectable callback (which is
+// invoked from the game's D3D Present hook) the entire game freezes for
+// the duration. Worse, rapid clicks can race the render_loop against the
+// streams_.clear() inside set_device and crash. Offload all device
+// switches to a single dedicated worker so the UI stays responsive and
+// switches are serialized.
+static std::thread             g_dev_worker;
+static std::mutex              g_dev_mtx;
+static std::condition_variable g_dev_cv;
+static std::deque<std::function<void()>> g_dev_jobs;
+static bool                    g_dev_quit = false;
+
+static void dev_worker_loop() {
+    dbglog("[overlay/dev] worker thread started");
+    for (;;) {
+        std::function<void()> job;
+        {
+            std::unique_lock<std::mutex> lk(g_dev_mtx);
+            g_dev_cv.wait(lk, []{ return g_dev_quit || !g_dev_jobs.empty(); });
+            if (g_dev_quit && g_dev_jobs.empty()) {
+                dbglog("[overlay/dev] worker thread exiting");
+                return;
+            }
+            // Coalesce: if the user clicked several devices fast, only the
+            // last selection matters — drop everything but the newest.
+            if (g_dev_jobs.size() > 1) {
+                dbglog("[overlay/dev] coalescing pending jobs, dropping older");
+                job = std::move(g_dev_jobs.back());
+                g_dev_jobs.clear();
+            } else {
+                job = std::move(g_dev_jobs.front());
+                g_dev_jobs.pop_front();
+            }
+        }
+        dbglog("[overlay/dev] running device job");
+        try { job(); } catch (...) {
+            dbglog("[overlay/dev] device job threw exception");
+        }
+        dbglog("[overlay/dev] device job finished");
+    }
+}
+
+static void post_device_job(std::function<void()> job) {
+    {
+        std::lock_guard<std::mutex> lk(g_dev_mtx);
+        if (g_dev_quit) return;
+        if (!g_dev_worker.joinable()) {
+            g_dev_quit = false;
+            g_dev_worker = std::thread(dev_worker_loop);
+        }
+        g_dev_jobs.push_back(std::move(job));
+    }
+    g_dev_cv.notify_one();
+    dbglog("[overlay/dev] posted device job");
+}
+
+
 static bool    g_badge_visible = true;  // Scroll Lock toggles the compact badge
 static bool    g_settings_open = false;
 static HWND    g_hwnd          = nullptr;
@@ -1184,11 +1250,15 @@ void draw_settings_window() {
         const char* mic_preview = g_mic_devs.empty() ? "(none)"
             : (g_sel_mic >= 0 && g_sel_mic < (int)g_mic_devs.size()) ? g_mic_devs[g_sel_mic].name.c_str() : "Default";
         if (begin_device_combo("##mic_dev", mic_preview, avw)) {
-            if (ImGui::Selectable(L("\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\x99", "Default", "Bawaan", "Default"), g_sel_mic == -1)) { g_sel_mic = -1; vc.set_mic_device(L""); }
+            if (ImGui::Selectable(L("\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\x99", "Default", "Bawaan", "Default"), g_sel_mic == -1)) {
+                g_sel_mic = -1;
+                post_device_job([vcp = &vc]{ vcp->set_mic_device(L""); });
+            }
             for (int i = 0; i < (int)g_mic_devs.size(); i++) {
                 if (ImGui::Selectable(g_mic_devs[i].name.c_str(), g_sel_mic == i)) {
                     g_sel_mic = i;
-                    vc.set_mic_device(g_mic_devs[i].id);
+                    std::wstring id = g_mic_devs[i].id;
+                    post_device_job([vcp = &vc, id = std::move(id)]{ vcp->set_mic_device(id); });
                 }
             }
             end_device_combo();
@@ -1202,11 +1272,15 @@ void draw_settings_window() {
         const char* spk_preview = g_spk_devs.empty() ? "(none)"
             : (g_sel_spk >= 0 && g_sel_spk < (int)g_spk_devs.size()) ? g_spk_devs[g_sel_spk].name.c_str() : "Default";
         if (begin_device_combo("##spk_dev", spk_preview, avw)) {
-            if (ImGui::Selectable(L("\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\x99", "Default", "Bawaan", "Default"), g_sel_spk == -1)) { g_sel_spk = -1; vc.set_speaker_device(L""); }
+            if (ImGui::Selectable(L("\xe0\xb8\x84\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb9\x88\xe0\xb8\xa1\xe0\xb8\x95\xe0\xb9\x89\xe0\xb8\x99", "Default", "Bawaan", "Default"), g_sel_spk == -1)) {
+                g_sel_spk = -1;
+                post_device_job([vcp = &vc]{ vcp->set_speaker_device(L""); });
+            }
             for (int i = 0; i < (int)g_spk_devs.size(); i++) {
                 if (ImGui::Selectable(g_spk_devs[i].name.c_str(), g_sel_spk == i)) {
                     g_sel_spk = i;
-                    vc.set_speaker_device(g_spk_devs[i].id);
+                    std::wstring id = g_spk_devs[i].id;
+                    post_device_job([vcp = &vc, id = std::move(id)]{ vcp->set_speaker_device(id); });
                 }
             }
             end_device_combo();
@@ -2047,6 +2121,15 @@ bool init(LPDIRECT3DDEVICE9 pDevice) {
 void shutdown() {
     if (!g_imgui_inited) return;
     dbglog("[overlay] shutdown");
+    // Drain the device-switch worker before tearing down ImGui — any pending
+    // set_device call would otherwise outlive the VoiceClient reference it
+    // captured.
+    {
+        std::lock_guard<std::mutex> lk(g_dev_mtx);
+        g_dev_quit = true;
+    }
+    g_dev_cv.notify_all();
+    if (g_dev_worker.joinable()) g_dev_worker.join();
     if (g_old_wndproc && g_hwnd)
         SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC,
                           reinterpret_cast<LONG_PTR>(g_old_wndproc));

@@ -379,7 +379,7 @@ void VoiceClient::load_settings(const char* path) {
             else if (key == "vad")               vad_.set_enabled(val == "1");
             else if (key == "aec")               aec_.set_enabled(val == "1");
             else if (key == "loudness_norm")     playback_.set_loudness_norm(val == "1");
-            else if (key == "client_secret")     client_secret_ = val;
+            else if (key == "client_secret") { if (!val.empty()) client_secret_ = val; }
         } catch (...) {}
     }
     if (deafened_.load()) {
@@ -429,8 +429,11 @@ void VoiceClient::save_settings(const char* path) {
       << "agc: "                 << (agc_.is_enabled()               ? 1 : 0) << "\n"
       << "vad: "                 << (vad_.is_enabled()               ? 1 : 0) << "\n"
       << "aec: "                 << (aec_.is_enabled()               ? 1 : 0) << "\n"
-      << "loudness_norm: "       << (playback_.is_loudness_norm()    ? 1 : 0) << "\n"
-      << "client_secret: "      << client_secret_                           << "\n";
+      << "loudness_norm: "       << (playback_.is_loudness_norm()    ? 1 : 0) << "\n";
+    // NOTE: client_secret is intentionally NOT persisted — it is a shared
+    // hard-coded secret baked into the DLL. Writing it to the user's
+    // settings file means a stale/empty entry from an older build would
+    // override the in-code default on next load and break auth.
 
     dbglog("[cfg] settings saved");
 }
@@ -1336,6 +1339,17 @@ void VoiceClient::position_loop() {
     int stable_auth_ticks = 0;
     constexpr int kAuthStableTicks = 5; // about 165 ms at the 33 ms loop cadence
 
+    // Off-map debounce. MemoryReader::read() occasionally returns
+    // account_id=0/char_id=0 for a single tick even mid-game — typically when
+    // Windows transiently pages out the game's data segment, sets PAGE_GUARD
+    // briefly, or VirtualQuery races with another mapping change. Reacting to
+    // a single bad read tore down the WS, cleared nearby_players_, and the
+    // reconnect loop brought everything back ~500 ms later — the player sees
+    // the overlay vanish and reappear "for no reason" while still talking.
+    // Require ~1 s of sustained off-map reads before closing the session.
+    int  off_map_ticks = 0;
+    constexpr int kOffMapTearDownTicks = 30; // ~990 ms at the 33 ms loop cadence
+
     while (running_) {
         Sleep(33);
 
@@ -1378,6 +1392,14 @@ void VoiceClient::position_loop() {
                 stable_char_id = 0;
                 stable_auth_ticks = 0;
 
+                // Debounce single-tick memory glitches (see kOffMapTearDownTicks
+                // comment above). Without this, a momentary VirtualQuery /
+                // PAGE_GUARD blip during gameplay would drop the voice
+                // session and visibly flicker the overlay.
+                ++off_map_ticks;
+                if (off_map_ticks < kOffMapTearDownTicks)
+                    continue;
+
                 if (ws_.is_connected() && (auth_sent_.load() || auth_confirmed_.load())) {
                     dbglog("[auth] lost map state - closing voice session");
                     auth_sent_ = false;
@@ -1387,6 +1409,7 @@ void VoiceClient::position_loop() {
                 }
                 continue;
             }
+            off_map_ticks = 0;  // got a clean read — reset the debounce
 
             // Keep in_map_ current even while disconnected.
             // This makes is_in_game() return false during char select (map="")
