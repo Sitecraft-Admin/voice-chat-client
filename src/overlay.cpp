@@ -1560,14 +1560,19 @@ void draw_voicebar_call_window() {
     ensure_ui_assets(g_ui_device);
 
     auto& vc        = VoiceClient::get();
-    bool  connected = vc.is_connected();
+    // voice_ready = the server has accepted us (auth_ok). A bare TCP connection
+    // isn't enough — if voice-server is up but auth is in flight, rejected, or
+    // the bridge isn't reporting our advisory yet, the player can't actually
+    // talk, so the badge must reflect that with a greyed-out "Offline" state
+    // rather than the normal Idle/Talk colour.
+    bool  voice_ready = vc.is_auth_confirmed();
     bool  ptt       = vc.is_locally_talking();
     bool  muted     = vc.is_muted() || vc.is_voice_banned() || vc.is_no_license();
     bool  deafened  = vc.is_deafened();
     Channel ch      = vc.get_channel();
 
     UiTexture* state_tex = &g_badge_idle_tex;
-    if (!connected)            state_tex = &g_badge_connecting_tex;
+    if (!voice_ready)           state_tex = &g_badge_connecting_tex;
     else if (muted && deafened) state_tex = &g_badge_mute_tex;
     else if (muted)             state_tex = &g_badge_mic_off_tex;
     else if (deafened)          state_tex = &g_badge_spk_off_tex;
@@ -1726,12 +1731,17 @@ void draw_voicebar_call_window() {
     if (state_tex && state_tex->tex) {
         ImGui::SameLine(0, 12.f); // +6px right
         ImGui::SetCursorPosY(10.f); // 4 + 6px down
+        // Grey out the badge while voice isn't usable so the player can see
+        // at a glance that the server is unreachable / auth not confirmed.
+        const ImVec4 tint = voice_ready ? ImVec4(1.f, 1.f, 1.f, 1.f)
+                                        : ImVec4(0.55f, 0.55f, 0.55f, 0.85f);
         ImGui::Image((ImTextureID)state_tex->tex,
                      ImVec2(badge_w, badge_h),
-                     ImVec2(0.f, 0.f), ImVec2(state_tex->u1, state_tex->v1));
+                     ImVec2(0.f, 0.f), ImVec2(state_tex->u1, state_tex->v1),
+                     tint);
         if (ImGui::IsItemHovered()) {
             const char* status = L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice", "Suara", "Tunog");
-            if (!connected) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline", "Offline", "Offline");
+            if (!voice_ready) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline", "Offline", "Offline");
             else if (deafened) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\xab\xe0\xb8\xb9", "Deafened", "Tuli", "Binungaran");
             else if (muted) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Muted", "Diamkan", "Natahimik");
             else if (ptt) status = L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking", "Berbicara", "Nagsasalita");
@@ -1804,14 +1814,18 @@ void draw_voice_window() {
     ensure_ui_assets(g_ui_device);
 
     auto& vc        = VoiceClient::get();
-    bool  connected = vc.is_connected();
+    // See the main draw_overlay path — auth_confirmed_ is the truthful "voice
+    // works right now" signal. A bare TCP connection that hasn't been ack'd
+    // by the voice server (or that the server is in the middle of rejecting)
+    // must show as Offline so the player doesn't think their mic is live.
+    bool  voice_ready = vc.is_auth_confirmed();
     bool  ptt       = vc.is_locally_talking();
     bool  muted     = vc.is_muted() || vc.is_voice_banned() || vc.is_no_license();
     bool  deafened  = vc.is_deafened();
     Channel ch      = vc.get_channel();
 
     UiTexture* state_tex = &g_badge_idle_tex;
-    if (!connected) {
+    if (!voice_ready) {
         state_tex = &g_badge_connecting_tex;
     } else if (muted && deafened) {
         state_tex = &g_badge_mute_tex;
@@ -1862,14 +1876,16 @@ void draw_voice_window() {
     }
     if (state_tex && state_tex->tex) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 tint = voice_ready ? IM_COL32_WHITE
+                                       : IM_COL32(140, 140, 140, 220);
         dl->AddImage((ImTextureID)state_tex->tex, badge_pos,
                      ImVec2(badge_pos.x + badge_size.x, badge_pos.y + badge_size.y),
-                     ImVec2(0.f, 0.f), ImVec2(state_tex->u1, state_tex->v1), IM_COL32_WHITE);
+                     ImVec2(0.f, 0.f), ImVec2(state_tex->u1, state_tex->v1), tint);
     }
 
     if (badge_hovered) {
         const char* status = L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87", "Voice", "Suara", "Tunog");
-        if (!connected) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline", "Offline", "Offline");
+        if (!voice_ready) status = L("\xe0\xb8\xad\xe0\xb8\xad\xe0\xb8\x9f\xe0\xb9\x84\xe0\xb8\xa5\xe0\xb8\x99\xe0\xb9\x8c", "Offline", "Offline", "Offline");
         else if (deafened) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb8\xab\xe0\xb8\xb9", "Deafened", "Tuli", "Binungaran");
         else if (muted) status = L("\xe0\xb8\x9b\xe0\xb8\xb4\xe0\xb8\x94\xe0\xb9\x84\xe0\xb8\xa1\xe0\xb8\x84\xe0\xb9\x8c", "Muted", "Diamkan", "Natahimik");
         else if (ptt) status = L("\xe0\xb8\x81\xe0\xb8\xb3\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x87\xe0\xb8\x9e\xe0\xb8\xb9\xe0\xb8\x94", "Talking", "Berbicara", "Nagsasalita");

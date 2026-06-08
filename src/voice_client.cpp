@@ -1058,6 +1058,14 @@ void VoiceClient::on_text_message(const std::string& msg) {
             reconnect_backoff_until_ = GetTickCount() + 15000;
             dbglog("[ws] account/advisory conflict — backing off 15s before reconnect");
         }
+        else if (err == "session contested") {
+            // The voice server's flap dampener is keeping another live client
+            // that owns this char_id (same account open in two places). Back off
+            // longer than the server's flap window so we stop thrashing — if the
+            // other client closes, this one reclaims the slot after the backoff.
+            reconnect_backoff_until_ = GetTickCount() + 30000;
+            dbglog("[ws] session contested by another client — backing off 30s before reconnect");
+        }
     }
     else if (type == "admin_banned") {
         voice_banned_ = true;
