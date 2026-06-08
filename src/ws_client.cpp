@@ -219,6 +219,12 @@ bool WsClient::connect(const std::wstring& host, INTERNET_PORT port, const std::
 void WsClient::recv_loop() {
     dbglog("[rawtcp] recv loop started");
 
+    // On the TCP fallback path, inbound voice is decoded on this thread via the
+    // on_binary callback. Keep it below the game's main thread so voice traffic
+    // can't preempt the render thread and hitch FPS (FPS fix 2). Control frames
+    // are tiny, so the lower priority is imperceptible for them.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+
     while (connected_) {
         SOCKET s = INVALID_SOCKET;
         {

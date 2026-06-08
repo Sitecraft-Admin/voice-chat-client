@@ -45,4 +45,8 @@ namespace Overlay {
     // Hotkeys (replicated from the old in-game wndproc hook).
     void toggle_badge();        // Scroll Lock — show/hide the compact badge
     void toggle_call_popup();   // Home — open/close "call by name"
+
+    // ── Diagnostics: overlay render time on the GAME thread (FPS-stutter probe) ─
+    float get_render_avg_ms();  // EWMA of per-frame overlay cost
+    float get_render_max_ms();  // slowly-decaying peak per-frame overlay cost
 }

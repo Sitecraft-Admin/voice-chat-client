@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -2066,6 +2067,14 @@ void draw_voice_window() {
 
 namespace Overlay {
 
+// ── Render-time diagnostics (FPS-stutter probe) ─────────────────────────────
+// Measures how long the overlay spends on the GAME's render thread each frame.
+// EWMA + a slowly-decaying max are read by the voice client's periodic stat log.
+static std::atomic<float> g_render_avg_ms{ 0.f };
+static std::atomic<float> g_render_max_ms{ 0.f };
+float get_render_avg_ms() { return g_render_avg_ms.load(std::memory_order_relaxed); }
+float get_render_max_ms() { return g_render_max_ms.load(std::memory_order_relaxed); }
+
 bool init(LPDIRECT3DDEVICE9 pDevice) {
     if (g_imgui_inited) return true;
 
@@ -2208,6 +2217,9 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
         if (!init(pDevice)) return;
     }
 
+    // Time the overlay's per-frame cost on the game's render thread (diagnostics).
+    LARGE_INTEGER t_start; QueryPerformanceCounter(&t_start);
+
     ImGui_ImplDX9_NewFrame();
     if (g_external_mode) {
         // Manual input: the external overlay supplies cursor + buttons + size.
@@ -2265,7 +2277,7 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
     // external overlay can render at full rate now and idle slowly otherwise.
     g_ext_hi_fps = g_ext_want_capture || g_settings_open || g_call_popup ||
                    g_whisper_popup || vc.is_ptt_active() || vc.is_locally_talking() ||
-                   !vc.get_active_speakers().empty();
+                   vc.any_speaker_recent();   // lock-free; no per-frame alloc on the render thread
 
     ImGui::EndFrame();
     ImGui::Render();
@@ -2291,6 +2303,19 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
     } else {
         g_has_draw = false;
     }
+
+    // ── Render-time stats (diagnostics) ─────────────────────────────────────
+    LARGE_INTEGER t_end, freq;
+    QueryPerformanceCounter(&t_end);
+    QueryPerformanceFrequency(&freq);
+    const float ms = static_cast<float>(
+        (double)(t_end.QuadPart - t_start.QuadPart) * 1000.0 / (double)freq.QuadPart);
+    float avg = g_render_avg_ms.load(std::memory_order_relaxed);
+    avg = (avg <= 0.f) ? ms : (avg * 0.95f + ms * 0.05f);
+    g_render_avg_ms.store(avg, std::memory_order_relaxed);
+    float mx = g_render_max_ms.load(std::memory_order_relaxed);
+    mx = (ms > mx) ? ms : (mx * 0.999f);   // slow decay so one spike doesn't stick forever
+    g_render_max_ms.store(mx, std::memory_order_relaxed);
 }
 
 bool get_draw_bounds(int& x0, int& y0, int& x1, int& y1) {

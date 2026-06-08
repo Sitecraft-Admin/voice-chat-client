@@ -90,6 +90,14 @@ public:
     // Returns char_ids that sent audio within the last 800 ms
     std::vector<uint32_t> get_active_speakers();
 
+    // Cheap, lock-free proxy for "is anyone talking right now". Used on the GAME
+    // render thread to pick hi/lo overlay FPS WITHOUT taking active_spk_mtx_ or
+    // allocating a vector every frame (FPS-stutter fix).
+    bool any_speaker_recent() const {
+        DWORD t = last_voice_rx_tick_.load(std::memory_order_relaxed);
+        return t != 0 && (GetTickCount() - t) < 700;
+    }
+
     // Returns all char_ids the server reported as nearby (within proximity range)
     std::vector<uint32_t> get_nearby_players();
 
@@ -218,7 +226,20 @@ private:
     std::vector<std::string> speakers_;
 
     std::mutex active_spk_mtx_;
-    std::unordered_map<uint32_t, DWORD> active_speakers_; // char_id → last tick
+    struct SpeakerActivity { DWORD tick = 0; float vol = 0.f; };
+    std::unordered_map<uint32_t, SpeakerActivity> active_speakers_; // char_id → last tick + volume
+
+    // ── Concurrent-voice cap + diagnostics (FPS-stutter mitigation) ─────────────
+    // In a crowd the client used to opus_decode EVERY simultaneous talker, and
+    // decode cost scales linearly with talkers — starving the game's main thread
+    // and dropping FPS. Decode only the loudest (== nearest, since volume is
+    // proximity-attenuated) `max_concurrent_voices_` talkers; drop the rest.
+    // 0 = unlimited (old behaviour).
+    int max_concurrent_voices_ = 10;
+    std::atomic<DWORD>    last_voice_rx_tick_{ 0 };  // any inbound voice frame (render-thread proxy)
+    std::atomic<uint64_t> tx_udp_packets_{ 0 };      // voice frames sent over UDP
+    std::atomic<uint64_t> tx_tcp_packets_{ 0 };      // voice frames sent over TCP fallback
+    std::atomic<uint64_t> rx_voice_dropped_cap_{ 0 };// frames skipped by the concurrent-voice cap
 
     std::mutex name_cache_mtx_;
     std::unordered_map<uint32_t, std::string> name_cache_; // char_id → name

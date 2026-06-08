@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include "obf_string.hpp"
 #include "anti_tamper.hpp"
+#include "overlay.hpp"   // Overlay::get_render_avg_ms/max_ms for the periodic stat log
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -176,6 +177,11 @@ private:
     }
 
     void recv_loop() {
+        // Decode happens on this thread (recv → on_binary_message → opus_decode).
+        // Keep it BELOW the game's main thread so a crowd of talkers can never
+        // preempt the game's render thread and cause FPS hitches. The OS UDP RX
+        // buffer + jitter buffer absorb the brief scheduling delay (FPS fix 2).
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         DWORD last_hello = GetTickCount();
         while (running_.load()) {
             SOCKET s = sock_;
@@ -380,6 +386,7 @@ void VoiceClient::load_settings(const char* path) {
             else if (key == "aec")               aec_.set_enabled(val == "1");
             else if (key == "loudness_norm")     playback_.set_loudness_norm(val == "1");
             else if (key == "client_secret") { if (!val.empty()) client_secret_ = val; }
+            else if (key == "max_voices") { max_concurrent_voices_ = std::stoi(val); }
         } catch (...) {}
     }
     if (deafened_.load()) {
@@ -429,7 +436,8 @@ void VoiceClient::save_settings(const char* path) {
       << "agc: "                 << (agc_.is_enabled()               ? 1 : 0) << "\n"
       << "vad: "                 << (vad_.is_enabled()               ? 1 : 0) << "\n"
       << "aec: "                 << (aec_.is_enabled()               ? 1 : 0) << "\n"
-      << "loudness_norm: "       << (playback_.is_loudness_norm()    ? 1 : 0) << "\n";
+      << "loudness_norm: "       << (playback_.is_loudness_norm()    ? 1 : 0) << "\n"
+      << "max_voices: "          << max_concurrent_voices_                     << "\n";
     // NOTE: client_secret is intentionally NOT persisted — it is a shared
     // hard-coded secret baked into the DLL. Writing it to the user's
     // settings file means a stale/empty entry from an older build would
@@ -1051,10 +1059,14 @@ void VoiceClient::on_text_message(const std::string& msg) {
             char_switch_pending_ = true;
         else if (err == "session replaced by new login")
             session_replaced_ = true;
-        else if (err == "stale account session" || err == "no active map session") {
-            // Not validly in game right now (another char took the account, or the
-            // map server has no advisory for us). Back off before reconnecting so
-            // we don't tight-loop / ping-pong with another machine on this account.
+        else if (err == "credentials mismatch" || err == "no active map session") {
+            // Not validly in game right now: either the voice server's advisory
+            // says a different account_id owns this char_id ("credentials
+            // mismatch" — another machine took the account, or a spoof), or the
+            // map server has no advisory for us yet ("no active map session").
+            // Back off before reconnecting so we don't tight-loop / ping-pong
+            // with another machine on this account. These are the exact strings
+            // the voice server sends (server.cpp) — keep them in sync.
             reconnect_backoff_until_ = GetTickCount() + 15000;
             dbglog("[ws] account/advisory conflict — backing off 15s before reconnect");
         }
@@ -1301,9 +1313,44 @@ void VoiceClient::on_binary_message(const std::vector<uint8_t>& data) {
         name_cache_[sender_id] = sender_name;
     }
 
+    // Update talker activity AND decide whether this voice is within the
+    // concurrent-voice cap — both under one lock so we don't double-acquire.
+    const DWORD rx_now = GetTickCount();
+    last_voice_rx_tick_.store(rx_now, std::memory_order_relaxed); // render-thread proxy (fix 3)
+    bool within_cap = true;
     {
         std::lock_guard<std::mutex> lk(active_spk_mtx_);
-        active_speakers_[sender_id] = GetTickCount();
+        auto& a = active_speakers_[sender_id];
+        a.tick = rx_now;
+        a.vol  = volume;
+
+        const int cap = max_concurrent_voices_;
+        if (cap > 0) {
+            // Count concurrently-active talkers (within a tight window) and how
+            // many are strictly LOUDER than this one. Prune long-stale entries
+            // here too, since the render thread no longer calls get_active_speakers
+            // every frame to do it.
+            constexpr DWORD CAP_WINDOW_MS = 400;   // "currently talking"
+            constexpr DWORD PRUNE_MS      = 800;
+            int active = 0, louder = 0;
+            for (auto it = active_speakers_.begin(); it != active_speakers_.end(); ) {
+                const DWORD age = rx_now - it->second.tick;
+                if (age >= PRUNE_MS) { it = active_speakers_.erase(it); continue; }
+                if (age < CAP_WINDOW_MS) {
+                    ++active;
+                    if (it->first != sender_id && it->second.vol > volume) ++louder;
+                }
+                ++it;
+            }
+            // Over the cap: only decode if this talker is among the loudest `cap`
+            // (i.e. fewer than `cap` others are louder). Nearest voices win.
+            if (active > cap && louder >= cap) within_cap = false;
+        }
+    }
+
+    if (!within_cap) {
+        rx_voice_dropped_cap_.fetch_add(1, std::memory_order_relaxed);
+        return;   // crowd: skip decode for this far/quiet talker (FPS fix 1)
     }
 
     if (!deafened_.load() && !is_player_muted(sender_id)) {
@@ -1342,6 +1389,7 @@ void VoiceClient::position_loop() {
 
     bool last_ptt = false;
     DWORD last_ping_tick = 0;
+    DWORD last_stat_tick = 0;   // periodic diagnostics (FPS-stutter investigation)
     int stable_account_id = 0;
     int stable_char_id = 0;
     int stable_auth_ticks = 0;
@@ -1488,6 +1536,27 @@ void VoiceClient::position_loop() {
                 ws_.send_text(ping.dump());
                 last_ping_tick = now;
                 last_ping_sent_tick_.store(now);
+            }
+
+            // ── Periodic diagnostics (FPS-stutter investigation) ───────────────
+            // Logs once every 5 s: concurrent talkers, voice cap drops, transport
+            // split (UDP vs TCP fallback — TCP = the choppy path), RTT, and the
+            // overlay's measured render time on the game thread. Lets us confirm
+            // the cause before/after the mitigations rather than guessing.
+            if (now - last_stat_tick >= 5000) {
+                last_stat_tick = now;
+                const size_t talkers = get_active_speakers().size();
+                char sb[224];
+                sprintf_s(sb,
+                    "[stat] talkers=%zu cap=%d cap_drops=%llu tx_udp=%llu tx_tcp=%llu udp_live=%d rtt=%ums render_avg=%.2fms render_max=%.2fms",
+                    talkers, max_concurrent_voices_,
+                    (unsigned long long)rx_voice_dropped_cap_.load(std::memory_order_relaxed),
+                    (unsigned long long)tx_udp_packets_.load(std::memory_order_relaxed),
+                    (unsigned long long)tx_tcp_packets_.load(std::memory_order_relaxed),
+                    g_udp_voice.ready() ? 1 : 0,
+                    rtt_ms_.load(),
+                    Overlay::get_render_avg_ms(), Overlay::get_render_max_ms());
+                dbglog(sb);
             }
 
             // Position is now sent by Map Server via UDP
@@ -1655,8 +1724,10 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
         }
 
         const uint8_t ch_byte = static_cast<uint8_t>(tx_channel);
-        if (g_udp_voice.send_voice(ch_byte, gid, seq, opus_buf, static_cast<size_t>(opus_bytes)))
+        if (g_udp_voice.send_voice(ch_byte, gid, seq, opus_buf, static_cast<size_t>(opus_bytes))) {
+            tx_udp_packets_.fetch_add(1, std::memory_order_relaxed);
             continue;
+        }
 
         std::vector<uint8_t> packet;
         packet.reserve(7 + opus_bytes);
@@ -1670,7 +1741,8 @@ void VoiceClient::on_audio_captured(const std::vector<int16_t>& pcm) {
         packet.insert(packet.end(), opus_buf, opus_buf + opus_bytes);
 
         bool ok = ws_.send_binary(packet);
-        if (!ok) dbglog("[audio/tx] send_binary FAILED");
+        if (ok) tx_tcp_packets_.fetch_add(1, std::memory_order_relaxed);
+        else    dbglog("[audio/tx] send_binary FAILED");
     }
 }
 
@@ -1857,7 +1929,7 @@ std::vector<uint32_t> VoiceClient::get_active_speakers() {
     DWORD now = GetTickCount();
     std::vector<uint32_t> out;
     for (auto it = active_speakers_.begin(); it != active_speakers_.end(); ) {
-        if (now - it->second < 800) {
+        if (now - it->second.tick < 800) {
             out.push_back(it->first);
             ++it;
         } else {
