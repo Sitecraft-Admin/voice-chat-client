@@ -1405,6 +1405,11 @@ void VoiceClient::position_loop() {
     // Require ~1 s of sustained off-map reads before closing the session.
     int  off_map_ticks = 0;
     constexpr int kOffMapTearDownTicks = 30; // ~990 ms at the 33 ms loop cadence
+    // Shorter blip tolerance for PTT: a transient bad read mustn't drop PTT mid-
+    // sentence (it would cut audio + flicker the speaking-hat that OTHER players
+    // see). Hold PTT through a few off-map ticks, but release well before the ~1s
+    // teardown so leaving the map really does stop transmitting promptly.
+    constexpr int kPttBlipTicks = 5;         // ~165 ms
 
     while (running_) {
         Sleep(33);
@@ -1434,10 +1439,17 @@ void VoiceClient::position_loop() {
             // on_map = auth_ready (account_id > 0 && char_id > 0).
             // MAP_NAME / CHAR_X / CHAR_Y offsets are optional (overlay/debug only).
             const bool on_map = state.auth_ready;
-            in_map_ = on_map;
+            // NOTE: in_map_ is committed AFTER the off-map debounce below (not raw
+            // here). A transient bad read must NOT momentarily flip in_map_ false,
+            // or the voice bar (gated on is_in_game) flickers/disappears.
 
+            // Blip-tolerant on-map for PTT: treat as on-map if the current read is
+            // good OR we've only been off-map for a few ticks (off_map_ticks is the
+            // count from PRIOR ticks; it's incremented below). Stops audio cutting
+            // out on a momentary VirtualQuery/PAGE_GUARD glitch while talking.
+            const bool ptt_on_map = on_map || (off_map_ticks < kPttBlipTicks);
             const int ptt_key = ptt_key_.load();
-            bool ptt = on_map && (open_mic_.load() || ((GetAsyncKeyState(ptt_key) & 0x8000) != 0));
+            bool ptt = ptt_on_map && (open_mic_.load() || ((GetAsyncKeyState(ptt_key) & 0x8000) != 0));
             if (ptt != last_ptt) {
                 last_ptt = ptt;
                 set_ptt(ptt);
@@ -1450,11 +1462,13 @@ void VoiceClient::position_loop() {
 
                 // Debounce single-tick memory glitches (see kOffMapTearDownTicks
                 // comment above). Without this, a momentary VirtualQuery /
-                // PAGE_GUARD blip during gameplay would drop the voice
-                // session and visibly flicker the overlay.
+                // PAGE_GUARD blip during gameplay would drop the voice session
+                // AND hide the voice bar. Keep in_map_ TRUE until off-map has
+                // been sustained, so the overlay survives transient blips.
                 ++off_map_ticks;
                 if (off_map_ticks < kOffMapTearDownTicks)
                     continue;
+                in_map_ = false;  // sustained off-map (char select / loading) — hide now
 
                 if (ws_.is_connected() && (auth_sent_.load() || auth_confirmed_.load())) {
                     dbglog("[auth] lost map state - closing voice session");
@@ -1466,6 +1480,7 @@ void VoiceClient::position_loop() {
                 continue;
             }
             off_map_ticks = 0;  // got a clean read — reset the debounce
+            in_map_ = true;     // confirmed on a map — keep the voice bar visible
 
             // Keep in_map_ current even while disconnected.
             // This makes is_in_game() return false during char select (map="")
