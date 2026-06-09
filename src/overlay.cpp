@@ -2253,10 +2253,15 @@ void render(LPDIRECT3DDEVICE9 pDevice) {
     g_whisper_popup = in_game &&
         (vc.get_whisper_state() == VoiceClient::WhisperState::Incoming);
 
-    if (g_visible && in_game && g_badge_visible) draw_voicebar_call_window();
-    if (g_settings_open && in_game) draw_settings_window();
-    if (g_whisper_popup)             draw_whisper_popup();
-    if (g_call_popup && in_game)     draw_call_popup();
+    // Badge + settings gate on on_map (NOT in_game): in_game requires
+    // auth_confirmed, so when the voice server is down the whole badge used to
+    // vanish. We want it to stay visible and grey out instead (the "offline"
+    // poring), so the player can see voice is down and still open settings.
+    // draw_voicebar_call_window already greys itself via is_auth_confirmed().
+    if (g_visible && on_map && g_badge_visible) draw_voicebar_call_window();
+    if (g_settings_open && on_map) draw_settings_window();
+    if (g_whisper_popup)             draw_whisper_popup();   // needs voice — gated on in_game upstream
+    if (g_call_popup && in_game)     draw_call_popup();      // needs voice connection
 
     // Frame-pacing stabilizer (see g_pacing_fill_passes note above).
     if (g_pacing_fill_passes > 0 && in_game) {
