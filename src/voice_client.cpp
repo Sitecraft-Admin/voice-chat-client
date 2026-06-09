@@ -400,6 +400,33 @@ void VoiceClient::load_settings(const char* path) {
 }
 
 void VoiceClient::save_settings(const char* path) {
+    // Preserve keys this function does NOT manage but dllmain reads at startup
+    // (overlay_external / overlay_pacing_fill). Without this, every save — e.g.
+    // closing the settings window — rewrites the file without them, silently
+    // resetting the overlay mode to default on the next launch. (This is why
+    // setting overlay_external: 1 "didn't work" — it got wiped on first save.)
+    bool has_ext = false, has_pace = false;
+    std::string ext_val, pace_val;
+    {
+        std::ifstream rf(path);
+        std::string line;
+        auto trim = [](std::string s) {
+            size_t a = s.find_first_not_of(" \t\r\n");
+            size_t b = s.find_last_not_of(" \t\r\n");
+            return (a == std::string::npos) ? std::string{} : s.substr(a, b - a + 1);
+        };
+        while (std::getline(rf, line)) {
+            size_t cm = line.find("//");
+            if (cm != std::string::npos) line = line.substr(0, cm);
+            size_t colon = line.find(':');
+            if (colon == std::string::npos) continue;
+            std::string key = trim(line.substr(0, colon));
+            std::string val = trim(line.substr(colon + 1));
+            if (key == "overlay_external")         { has_ext  = true; ext_val  = val; }
+            else if (key == "overlay_pacing_fill") { has_pace = true; pace_val = val; }
+        }
+    }
+
     std::ofstream f(path);
     if (!f.is_open()) { dbglog("[cfg] cannot save settings"); return; }
 
@@ -438,6 +465,13 @@ void VoiceClient::save_settings(const char* path) {
       << "aec: "                 << (aec_.is_enabled()               ? 1 : 0) << "\n"
       << "loudness_norm: "       << (playback_.is_loudness_norm()    ? 1 : 0) << "\n"
       << "max_voices: "          << max_concurrent_voices_                     << "\n";
+    // Always emit the overlay-mode keys — with the current value, or the default
+    // if the file didn't have them — so they're ALWAYS visible/editable in the
+    // config (and survive this rewrite; they're read by dllmain at startup).
+    f << "// overlay_external: 1 = separate window (default; smoother, no cursor issues — single-client)\n"
+      << "//                   0 = draw in-game (OBS Game Capture; use for multi-box)\n"
+      << "overlay_external: "    << (has_ext  ? ext_val  : "1") << "\n"
+      << "overlay_pacing_fill: " << (has_pace ? pace_val : "1") << "\n";
     // NOTE: client_secret is intentionally NOT persisted — it is a shared
     // hard-coded secret baked into the DLL. Writing it to the user's
     // settings file means a stale/empty entry from an older build would

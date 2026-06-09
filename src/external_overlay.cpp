@@ -13,6 +13,11 @@
 
 #pragma comment(lib, "d3d9.lib")
 
+// Defined in dllmain.cpp — stops all background threads (anti-tamper, overlay,
+// voice/audio/network) gracefully. Called from the game-window shutdown hook so
+// external mode doesn't hang the process on close.
+extern "C" __declspec(dllexport) void VoiceStopThreads();
+
 namespace ExternalOverlay {
 namespace {
 
@@ -357,7 +362,11 @@ void hide_layer() {
 // Render the ImGui UI to the off-screen RT, then read back + blit ONLY the
 // bounding box that was drawn (not the whole screen) into the layered window.
 // (ox,oy) = game client-area top-left in screen coordinates.
-void render_frame(int w, int h, int ox, int oy) {
+// foreground = is THIS game window the active one? When false (e.g. a second
+// multi-boxed client), we still draw the bar but feed NO input and glue the
+// overlay above its own game (not topmost) so it doesn't grab clicks or float
+// over the focused client.
+void render_frame(int w, int h, int ox, int oy, bool foreground) {
     // Handle a lost device (exclusive fullscreen by another app, RDP, lock screen).
     HRESULT co = g_dev->TestCooperativeLevel();
     if (co == D3DERR_DEVICELOST) { return; }            // not ready — skip frame
@@ -380,18 +389,22 @@ void render_frame(int w, int h, int ox, int oy) {
     last_tick = now;
     if (dt <= 0.f) dt = 1.f / 60.f;
 
+    // Only the FOREGROUND client takes input. A background (multi-boxed) client
+    // must not read the global cursor / mouse buttons — those belong to whatever
+    // window is focused, and feeding them here would let a background overlay
+    // steal the focused client's clicks.
     POINT cur{};
     GetCursorPos(&cur);
     float mx = float(cur.x - ox);
     float my = float(cur.y - oy);
-    const bool inside = (mx >= 0 && my >= 0 && mx < w && my < h);
+    const bool inside = foreground && (mx >= 0 && my >= 0 && mx < w && my < h);
     if (!inside) { mx = -FLT_MAX; my = -FLT_MAX; }
-    const bool lmb = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    const bool rmb = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    const bool lmb = foreground && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    const bool rmb = foreground && (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
     Overlay::feed_external_input(float(w), float(h), mx, my, lmb, rmb, dt);
 
-    // Apply queued keyboard/wheel events (pushed by the hook thread).
-    if (drain_input_queue()) g_input_seen = true;
+    // Apply queued keyboard/wheel events (pushed by the hook thread, foreground only).
+    if (drain_input_queue() && foreground) g_input_seen = true;
 
     g_dev->SetRenderTarget(0, g_rt);
     g_dev->SetDepthStencilSurface(nullptr);
@@ -452,23 +465,50 @@ void render_frame(int w, int h, int ox, int oy) {
                         &bf, ULW_ALPHA);   // also moves/resizes the window
     ReleaseDC(nullptr, screen);
 
+    // Z-order: the focused client's overlay floats TOPMOST; a background client's
+    // overlay is glued just above ITS OWN game window — so a 2nd/3rd multi-boxed
+    // client still shows its bar over its own game, but never floats over the
+    // focused client.
+    HWND insert_after = foreground ? HWND_TOPMOST : g_game_hwnd;
+    static bool last_fg = !foreground;   // force a z-order set on the first frame
     if (!g_layer_visible) {
-        SetWindowPos(g_overlay_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+        SetWindowPos(g_overlay_hwnd, insert_after, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         ShowWindow(g_overlay_hwnd, SW_SHOWNOACTIVATE);
         g_layer_visible = true;
+        last_fg = foreground;
     }
 
-    // Re-assert topmost occasionally (cheap; not every frame).
+    // Re-assert z-order immediately on focus change, occasionally otherwise.
     static int topmost_tick = 0;
-    if (++topmost_tick >= 120) {
+    if (foreground != last_fg || ++topmost_tick >= 120) {
         topmost_tick = 0;
-        SetWindowPos(g_overlay_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+        last_fg = foreground;
+        SetWindowPos(g_overlay_hwnd, insert_after, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
-    // Interactive only while ImGui is hovering UI; otherwise pass clicks through.
-    set_click_through(!Overlay::external_wants_mouse());
+    // Interactive only while focused AND hovering UI; a background client is
+    // always click-through (it never grabs the cursor).
+    set_click_through(!foreground || !Overlay::external_wants_mouse());
+}
+
+// Subclass the GAME window (external mode has no in-process wndproc hook) ONLY to
+// catch WM_CLOSE/WM_DESTROY and stop our threads on the game's main thread BEFORE
+// it reaches ExitProcess. Otherwise the OS force-kills the worker threads mid
+// heap/COM call and process teardown deadlocks → SeasonOne.exe hangs.
+// Runs on the game's main thread, so VoiceStopThreads joining the external
+// overlay thread inside is safe (not a self-join).
+static WNDPROC g_game_wndproc_orig = nullptr;
+
+static LRESULT CALLBACK game_shutdown_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_CLOSE || msg == WM_DESTROY) {
+        WNDPROC orig = g_game_wndproc_orig;
+        VoiceStopThreads();
+        return orig ? CallWindowProcW(orig, hwnd, msg, wp, lp)
+                    : DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    return CallWindowProcW(g_game_wndproc_orig, hwnd, msg, wp, lp);
 }
 
 void run_loop() {
@@ -478,6 +518,11 @@ void run_loop() {
         g_owns_ui.store(false);   // let the in-process overlay take over
         return;
     }
+
+    // Install the close hook on the game window so we shut down cleanly on exit.
+    g_game_wndproc_orig = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(g_game_hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(game_shutdown_wndproc)));
 
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
@@ -571,9 +616,13 @@ void run_loop() {
         }
         if (relinquished) { Sleep(50); continue; } // in-process draws; we idle
 
-        const bool game_active = (GetForegroundWindow() == g_game_hwnd) &&
-                                 !IsIconic(g_game_hwnd);
-        if (!game_active) { hide_layer(); Sleep(50); continue; }
+        // Show the overlay whenever the game window is VISIBLE (not just when it
+        // is the foreground window) so 2nd/3rd multi-boxed clients show their bar
+        // too. Only hide when the game is minimized or hidden.
+        if (IsIconic(g_game_hwnd) || !IsWindowVisible(g_game_hwnd)) {
+            hide_layer(); Sleep(50); continue;
+        }
+        const bool foreground = (GetForegroundWindow() == g_game_hwnd);
 
         RECT cr{};
         GetClientRect(g_game_hwnd, &cr);
@@ -587,16 +636,21 @@ void run_loop() {
         // render_frame positions/sizes the layered window itself (via
         // UpdateLayeredWindow), blitting only the UI bounding box.
         g_input_seen = false;
-        render_frame(cw, ch, p.x, p.y);
+        render_frame(cw, ch, p.x, p.y, foreground);
 
-        // Keep a HIGH, steady update rate. A topmost layered window forces DWM to
-        // composite the game + overlay; if the overlay updates slowly (idle), the
-        // composition cadence desyncs from the scrolling game and the game itself
-        // visibly stutters during walking. The per-frame cost is tiny now that we
-        // only blit the UI bounding box, so a constant high rate is cheap.
-        // (Idle-throttling to ~30 Hz caused exactly that walk stutter.)
-        Sleep(5);  // ~165–200 Hz, steady
+        // Foreground: keep a HIGH, steady rate — a topmost layered window forces
+        // DWM to composite the game + overlay, and a slow/idle cadence desyncs
+        // from the scrolling game (walk stutter). Background (multi-box) clients
+        // don't need that, so update them slowly to save CPU.
+        Sleep(foreground ? 5 : 33);
     }
+
+    // Restore the game window's original wndproc (we subclassed it for WM_CLOSE).
+    if (g_game_wndproc_orig && IsWindow(g_game_hwnd)) {
+        SetWindowLongPtrW(g_game_hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(g_game_wndproc_orig));
+    }
+    g_game_wndproc_orig = nullptr;
 
     stop_input_hooks();
     d3d_shutdown();

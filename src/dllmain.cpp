@@ -10,13 +10,15 @@
 #include <string>
 
 // Overlay mode (read once at startup, before the D3D9 hook installs):
-//   default            → in-process overlay (draws inside the game; visible to
-//                        streamers / window-capture, but can stutter heavy scenes)
-//   overlay_external: 1 → external Discord-style window (smooth, but not captured
-//                        when sharing only the game window)
+//   default            → external Discord-style window (off the game's render
+//                        pipeline: no FPS stutter / cursor conflicts). Auto falls
+//                        back to in-process under exclusive fullscreen.
+//   overlay_external: 0 → in-process overlay (draws inside the game; captured by
+//                        OBS Game Capture; required for multi-boxing — with 2+
+//                        clients the game's anti-cheat kills the 2nd external box)
 static bool read_overlay_external() {
     std::ifstream f("voice_client.conf");
-    if (!f.is_open()) return false;            // default: in-process (old) overlay
+    if (!f.is_open()) return true;             // default: external overlay
     std::string line;
     while (std::getline(f, line)) {
         auto cm = line.find("//");
@@ -31,9 +33,9 @@ static bool read_overlay_external() {
             s = (a == std::string::npos) ? "" : s.substr(a, b - a + 1);
         };
         trim(key); trim(val);
-        if (key == "overlay_external") return val == "1" || val == "true";
+        if (key == "overlay_external") return !(val == "0" || val == "false");
     }
-    return false;
+    return true;                               // key absent → default external
 }
 
 // Number of full-screen fill passes used to steady RO's frame pacing (fixes
@@ -109,7 +111,13 @@ static DWORD WINAPI AntiTamperThread(LPVOID) {
     anti_tamper::periodic_check();
 
     while (g_at_running.load(std::memory_order_relaxed)) {
-        Sleep(30000);  // 30 seconds
+        // Interruptible ~30 s sleep: wake within ~100 ms once g_at_running goes
+        // false so shutdown doesn't block waiting on a 30 s Sleep (which made the
+        // game hang on close).
+        for (int i = 0; i < 300 && g_at_running.load(std::memory_order_relaxed); ++i)
+            Sleep(100);
+        if (!g_at_running.load(std::memory_order_relaxed))
+            break;
         anti_tamper::periodic_check();
     }
     return 0;
@@ -157,6 +165,29 @@ static DWORD WINAPI MainThread(LPVOID) {
     return 0;
 }
 
+// Stop every background thread we spawned (anti-tamper, overlay, voice/audio/
+// network) so the OS doesn't force-kill them mid heap/COM call on process exit —
+// which deadlocks the loader/heap lock during teardown and HANGS the process.
+// Safe to call multiple times; does NOT touch the d3d9/wndproc hooks (left for
+// the natural process teardown, which is harmless once the threads are gone).
+// MUST NOT be called from one of these threads themselves (it joins them).
+static std::atomic<bool> g_threads_stopped{ false };
+
+extern "C" __declspec(dllexport) void VoiceStopThreads() {
+    if (g_threads_stopped.exchange(true))
+        return;
+
+    g_at_running.store(false);
+    if (g_at_thread) {
+        WaitForSingleObject(g_at_thread, 2000);  // wakes within ~100ms now
+        CloseHandle(g_at_thread);
+        g_at_thread = nullptr;
+    }
+
+    ExternalOverlay::stop();
+    VoiceClient::get().shutdown();
+}
+
 static void ShutdownVoiceClient() {
     if (g_shutdown_started.exchange(true))
         return;
@@ -167,15 +198,7 @@ static void ShutdownVoiceClient() {
         g_main_thread = nullptr;
     }
 
-    g_at_running.store(false);
-    if (g_at_thread) {
-        WaitForSingleObject(g_at_thread, 35000);
-        CloseHandle(g_at_thread);
-        g_at_thread = nullptr;
-    }
-
-    ExternalOverlay::stop();
-    VoiceClient::get().shutdown();
+    VoiceStopThreads();
     D3D9Hook::uninstall();
 }
 

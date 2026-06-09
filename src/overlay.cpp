@@ -37,6 +37,9 @@
 #include "ui_slider_blobs.hpp"
 
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+// Defined in dllmain.cpp — stops all our background threads gracefully so the
+// game doesn't hang on close (force-killed threads deadlock process teardown).
+extern "C" __declspec(dllexport) void VoiceStopThreads();
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -845,6 +848,17 @@ HWND detect_hwnd(LPDIRECT3DDEVICE9 pDevice) {
 }
 
 LRESULT CALLBACK hkOverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    // Game is closing — stop our threads NOW (on the game's main thread, before
+    // it reaches ExitProcess). If we let the OS force-kill the audio/UDP/anti-
+    // tamper threads while they hold the heap/loader lock, process teardown
+    // deadlocks and SeasonOne.exe lingers in the task list. VoiceStopThreads is
+    // idempotent and does not touch this wndproc, so the pass-through stays valid.
+    if (msg == WM_CLOSE || msg == WM_DESTROY) {
+        WNDPROC orig = g_old_wndproc;
+        VoiceStopThreads();
+        return orig ? CallWindowProcW(orig, hwnd, msg, wparam, lparam)
+                    : DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
     if (g_visible && g_imgui_inited) {
         ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
         const bool in_game = VoiceClient::get().is_in_game();

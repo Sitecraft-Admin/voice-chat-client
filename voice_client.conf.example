@@ -1,0 +1,21 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  Voice Client config  —  rename to voice_client.conf and place next to the
+//  game .exe (the folder it runs from).  Lines starting with // are comments.
+//  Restart the game after editing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Overlay rendering mode:
+//   1 = external window (DEFAULT) → drawn outside the game (no FPS stutter /
+//                                   cursor conflicts). Single-client. OBS needs
+//                                   Display/Window Capture (not Game Capture).
+//   0 = in-process                → drawn inside the game. Use this for
+//                                   MULTI-BOXING (2+ clients) and OBS Game Capture.
+overlay_external: 1
+
+// Frame-pacing stabilizer for the in-process overlay (0 = off, 1 = default).
+// Ignored when overlay_external: 1.
+overlay_pacing_fill: 1
+
+// Max simultaneously-decoded voices in a crowd (0 = unlimited). Lower = less CPU
+// when many people talk at once near you.
+max_voices: 10
