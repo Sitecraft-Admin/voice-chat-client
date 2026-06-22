@@ -895,6 +895,10 @@ void VoiceClient::try_send_auth() {
     auth["char_id"]    = st.char_id;
     auth["session_id"] = g_voice_session_id;
     auth["secret"]     = client_secret_;
+    // Anti-spoof: only sent when the LOGIN_ID1 offset is configured. Omitted (0)
+    // keeps the server on the AID/CID-only check — backward compatible.
+    if (st.login_id1 != 0)
+        auth["login_id1"] = st.login_id1;
 
     if (ws_.send_text(auth.dump())) {
         auth_sent_ = true;

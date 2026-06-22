@@ -23,6 +23,16 @@ ROState MemoryReader::read() {
         {
             st.char_id = *ptr_cid;
         }
+
+        if (ROOffsets::LOGIN_ID1 != 0) {
+            auto* ptr_l1 = reinterpret_cast<uint32_t*>(ROOffsets::base() + ROOffsets::LOGIN_ID1);
+            if (VirtualQuery(ptr_l1, &mbi, sizeof(mbi)) &&
+                mbi.State == MEM_COMMIT &&
+                !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+            {
+                st.login_id1 = *ptr_l1;
+            }
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         dbglog("[mem] exception reading AID/CID");
         st = {};
