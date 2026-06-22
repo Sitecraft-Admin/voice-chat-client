@@ -45,8 +45,9 @@ Change `127.0.0.1` to your voice server IP before building.
 
 ## Memory Offsets
 
-Only **ACCOUNT_ID** and **CHAR_ID** are read from client memory.
-Position (X/Y/Map) is pushed by the map server via the voice server — no memory scanning needed for spatial audio.
+**ACCOUNT_ID** and **CHAR_ID** are read from client memory; **LOGIN_ID1** is optional
+(anti-spoof hardening — see below). Position (X/Y/Map) is pushed by the map server via
+the voice server — no memory scanning needed for spatial audio.
 
 Edit `src/memory_reader.hpp` to match your client version:
 
@@ -54,15 +55,42 @@ Edit `src/memory_reader.hpp` to match your client version:
 // Client 2024-08-22
 //constexpr uintptr_t ACCOUNT_ID = 0x116B7EC;
 //constexpr uintptr_t CHAR_ID    = 0x116B7F0;
+//constexpr uintptr_t LOGIN_ID1  = 0x0116B07C;
 
 // Client 2025-07-16
 constexpr uintptr_t ACCOUNT_ID = 0x011FB9A4;
 constexpr uintptr_t CHAR_ID    = 0x011FB9A8;
+constexpr uintptr_t LOGIN_ID1  = 0x011FB244;  // 0 = anti-spoof disabled
 ```
 
 Use [`tools/ro-mem-scanner.zip`](tools/ro-mem-scanner.zip) to find offsets for other client versions.
 
 > Run as **Administrator** while logged into a character on a map.
+
+### Anti-spoof hardening (LOGIN_ID1)
+
+By default the voice server verifies a client by its shared secret plus an
+`account_id` / `char_id` cross-check against the map server's advisory. Anyone who
+learns a victim's AID/CID **and** the shared client secret could still impersonate
+them on voice.
+
+Setting `LOGIN_ID1` closes that gap. `login_id1` is a random per-login session key
+that only the real game client holds in memory; the map server already forwards the
+authoritative value to the voice server. With the offset set, the DLL sends its
+`login_id1` on auth and the server rejects any session whose value doesn't match —
+so AID/CID + secret alone is no longer enough.
+
+Leaving `LOGIN_ID1 = 0` keeps the previous behaviour (fully backward compatible):
+the DLL omits the field and the server stays on the AID/CID-only check.
+
+**Finding the offset:** `login_id1` is **not** in the database (it's regenerated at
+each login), so the scanner can't pull it from MySQL like AID/CID. Instead:
+
+1. Set `log_level: 3` in the voice server's `conf/voice_athena.conf`, then log a
+   character in and watch the log for `auth_advisory ... l1=<value>`.
+2. Run `ro-mem-scanner`, complete the AID/CID/X-Y steps, then enter that `l1` value
+   at the **STEP 4** prompt. Relog when asked if more than one candidate remains.
+3. Copy the printed `LOGIN_ID1 = 0x...` line into `memory_reader.hpp` and rebuild.
 
 ---
 
