@@ -262,7 +262,7 @@ static UdpVoiceTransport g_udp_voice;
 
 } // namespace
 
-[[maybe_unused]] static std::string map_session_ended_text() {
+static std::string map_session_ended_text() {
     constexpr unsigned char k = 0x21u;
     constexpr std::array<unsigned char, 17> enc = {
         0x4c, 0x40, 0x51, 0x01, 0x52, 0x44, 0x52, 0x52, 0x48, 0x4e, 0x4f, 0x01, 0x44, 0x4f, 0x45, 0x44, 0x45
@@ -634,6 +634,7 @@ void VoiceClient::init() {
     rejected_login_id1_   = 0;
     auth_reject_streak_   = 0;
     expecting_charswitch_kick_ = false;
+    server_off_map_       = false;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
     reconnecting_ = false;
     init_opus_encoder();
@@ -947,6 +948,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         rejected_login_id1_.store(0);
         auth_reject_streak_.store(0);
         expecting_charswitch_kick_.store(false);
+        server_off_map_.store(false);   // confirmed in-game again → show the bar
         dbglog("[auth] auth_ok");
         const uint16_t udp_port = static_cast<uint16_t>(j.value("udp_port", 0));
         const uint64_t udp_token = j.value("udp_token", static_cast<uint64_t>(0));
@@ -1109,11 +1111,14 @@ void VoiceClient::on_text_message(const std::string& msg) {
         if (err.empty()) err = msg;
         std::string line = "[server/error] " + err;
         dbglog(line.c_str());
-        // "map session ended" (auth_revoke from a char switch / logoff) needs no
-        // special handling now: the WS closes, the DLL reconnects and re-auths, and
-        // the voice server holds the session pending until the map-server advisory
-        // confirms the char is back in-game (server-driven auth). No char_id wait.
-        if (err == "session replaced by new login")
+        // "map session ended" (auth_revoke) = the map server says this char left the
+        // map (char-select / logoff). Auth recovery is server-driven now (no char_id
+        // wait), but we use this authoritative signal to HIDE the voice bar at
+        // char-select — cleared on the next auth_ok. Without it the bar only greys,
+        // because this client keeps AID/CID in memory at char-select.
+        if (err == map_session_ended_text())
+            server_off_map_ = true;
+        else if (err == "session replaced by new login")
             session_replaced_ = true;
         else if (err == "credentials mismatch" || err == "no active map session") {
             // Not validly in game right now: either the voice server's advisory

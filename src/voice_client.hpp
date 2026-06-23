@@ -38,7 +38,12 @@ public:
     bool        is_connected()    const { return ws_.is_connected(); }
     bool        is_auth_confirmed() const { return auth_confirmed_.load(); } // server sent auth_ok
     bool        is_in_game()    const { return auth_confirmed_ && in_map_; }  // true = authed & on a map
-    bool        is_on_map()     const { return in_map_.load(); }
+    // on_map = best-known "player is on a map". in_map_ comes from client memory
+    // (AID/CID), but some clients keep those set at char-select, so we also honor
+    // the authoritative "map session ended" signal from the map server: once it
+    // says the session ended we treat the player as off-map (hide the voice bar,
+    // not just grey it) until the next successful auth_ok.
+    bool        is_on_map()     const { return in_map_.load() && !server_off_map_.load(); }
     bool        is_muted()      const { return muted_.load(); }
     bool        is_ptt_active() const { return ptt_active_.load(); }
     Channel     get_channel()   const;
@@ -155,6 +160,10 @@ private:
     std::atomic<bool> auth_sent_{ false };
     std::atomic<bool> auth_confirmed_{ false }; // set only on auth_ok from server
     std::atomic<bool> in_map_{ false };     // true only when on a map (hides overlay on char select)
+    std::atomic<bool> server_off_map_{ false }; // map server told us "map session ended" (left map /
+                                                // char-select); cleared on next auth_ok. Lets us HIDE
+                                                // the voice bar at char-select even when the client
+                                                // keeps AID/CID in memory there
     void position_loop();
 
     AudioCapture  capture_;
