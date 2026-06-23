@@ -406,7 +406,14 @@ DWORD WINAPI AudioCapture::capture_thread(LPVOID param) {
     ScopedCoInit co_init;
 
     DWORD task_idx;
-    HANDLE task = AvSetMmThreadCharacteristicsA("Pro Audio", &task_idx);
+    // MMCSS "Games" (NOT "Pro Audio"): we run inside the game process, and the
+    // "Pro Audio" scheduling category outranks the game's own threads — this
+    // capture thread (waking ~200x/s) then preempts the game's render thread and
+    // shows up as map-scroll/walk judder, even in silence. "Games" puts us in the
+    // same scheduling category as the game so CPU is shared fairly. Voice does not
+    // need pro-audio latency; Discord avoids this entirely by running audio in a
+    // separate process.
+    HANDLE task = AvSetMmThreadCharacteristicsA("Games", &task_idx);
 
     while (self->running_) {
         UINT32 frames_available = 0;
@@ -901,7 +908,10 @@ void AudioPlayback::render_loop() {
     timeBeginPeriod(1);
 
     DWORD task_idx;
-    HANDLE task = AvSetMmThreadCharacteristicsA("Pro Audio", &task_idx);
+    // "Games" not "Pro Audio" — keep this playback thread in the same MMCSS
+    // scheduling category as the game so it doesn't preempt the game's render
+    // thread (which caused in-game judder). See the capture thread for details.
+    HANDLE task = AvSetMmThreadCharacteristicsA("Games", &task_idx);
 
     while (render_running_) {
         Sleep(5);

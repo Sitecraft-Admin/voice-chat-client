@@ -5,6 +5,7 @@
 
 #include <Windows.h>
 #include <d3d9.h>
+#include <dwmapi.h>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -12,6 +13,7 @@
 #include <cfloat>
 
 #pragma comment(lib, "d3d9.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 // Defined in dllmain.cpp — stops all background threads (anti-tamper, overlay,
 // voice/audio/network) gracefully. Called from the game-window shutdown hook so
@@ -638,11 +640,19 @@ void run_loop() {
         g_input_seen = false;
         render_frame(cw, ch, p.x, p.y, foreground);
 
-        // Foreground: keep a HIGH, steady rate — a topmost layered window forces
-        // DWM to composite the game + overlay, and a slow/idle cadence desyncs
-        // from the scrolling game (walk stutter). Background (multi-box) clients
-        // don't need that, so update them slowly to save CPU.
-        Sleep(foreground ? 5 : 33);
+        // Pace the overlay to the compositor's vblank instead of spinning at a
+        // fixed ~200 Hz. A topmost layered window is composited by DWM together
+        // with the game; re-blitting (UpdateLayeredWindow) out of phase with
+        // composition is what made the scrolling map judder, and the old fixed
+        // Sleep(5) also burned a GPU readback + composite 200x/sec. DwmFlush blocks
+        // until the next composition, so our blit lands once per composite — steady
+        // pacing at the display rate, far less GPU/CPU, and no desync judder.
+        // Background (multi-boxed) clients don't need smoothness → slow + cheap.
+        if (foreground) {
+            if (FAILED(DwmFlush())) Sleep(8);   // fallback if DWM composition is off
+        } else {
+            Sleep(33);
+        }
     }
 
     // Restore the game window's original wndproc (we subclassed it for WM_CLOSE).
