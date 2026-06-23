@@ -168,10 +168,11 @@ private:
     std::atomic<int>     last_auth_char_id_{ 0 }; // char_id we last successfully authed as
                                                   // (set in try_send_auth, read by position_loop
                                                   // to avoid spurious char-switch detection)
-    std::atomic<bool>    char_switch_pending_{ false }; // server told us "map session ended"
-                                                        // → wait for char_id to change in memory
-                                                        // before reconnecting (avoids double-auth)
     std::atomic<bool>    session_replaced_{ false };   // server kicked us — another client took this slot
+    std::atomic<bool>    expecting_charswitch_kick_{ false }; // we re-authed as a new char on the same
+                                                       // connection (char switch) and expect the server
+                                                       // to kick us for a clean reconnect — that close is
+                                                       // benign, not a credentials rejection
     std::atomic<uint32_t> last_sent_login_id1_{ 0 };   // login_id1 sent on the last auth attempt
     std::atomic<uint32_t> rejected_login_id1_{ 0 };    // login_id1 the server rejected as "credentials
                                                        // mismatch" → don't re-auth with this exact value

@@ -262,7 +262,7 @@ static UdpVoiceTransport g_udp_voice;
 
 } // namespace
 
-static std::string map_session_ended_text() {
+[[maybe_unused]] static std::string map_session_ended_text() {
     constexpr unsigned char k = 0x21u;
     constexpr std::array<unsigned char, 17> enc = {
         0x4c, 0x40, 0x51, 0x01, 0x52, 0x44, 0x52, 0x52, 0x48, 0x4e, 0x4f, 0x01, 0x44, 0x4f, 0x45, 0x44, 0x45
@@ -633,6 +633,7 @@ void VoiceClient::init() {
     last_sent_login_id1_  = 0;
     rejected_login_id1_   = 0;
     auth_reject_streak_   = 0;
+    expecting_charswitch_kick_ = false;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
     reconnecting_ = false;
     init_opus_encoder();
@@ -730,7 +731,10 @@ void VoiceClient::on_ws_closed() {
     auth_confirmed_ = false;
     g_udp_voice.stop();
 
-    if (auth_was_rejected) {
+    const bool charswitch_kick = expecting_charswitch_kick_.exchange(false);
+    if (charswitch_kick) {
+        auth_reject_streak_.store(0);
+    } else if (auth_was_rejected) {
         const uint32_t l1 = last_sent_login_id1_.load();
         if (auth_reject_streak_.fetch_add(1) + 1 >= 2 && l1 != 0) {
             rejected_login_id1_.store(l1);
@@ -889,21 +893,12 @@ void VoiceClient::try_send_auth() {
     // Position comes from Map Server via UDP — DLL only needs AID + CID to auth.
     // MAP_NAME / CHAR_X / CHAR_Y offsets are not required for auth to work.
     if (!st.auth_ready) {
-        char_switch_pending_ = false;  // not in game — clear stale flag
         char b[256];
         sprintf_s(b, "[auth] not ready acc=%d char=%d",
             st.account_id, st.char_id);
         dbglog(b);
         return;
     }
-
-    // If server told us "map session ended" (char switch kick), hold off until
-    // the char_id in memory actually changes.  This avoids re-authing as the
-    // old char and burning an extra kick/reconnect round-trip.
-    if (char_switch_pending_ && st.char_id == last_auth_char_id_.load()) {
-        return;   // still showing old char — wait for new char to load
-    }
-    char_switch_pending_ = false;
 
     if (st.login_id1 != 0 && st.login_id1 == rejected_login_id1_.load()) {
         return;
@@ -951,6 +946,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         reconnect_backoff_until_.store(0); // auth succeeded — clear any conflict backoff
         rejected_login_id1_.store(0);
         auth_reject_streak_.store(0);
+        expecting_charswitch_kick_.store(false);
         dbglog("[auth] auth_ok");
         const uint16_t udp_port = static_cast<uint16_t>(j.value("udp_port", 0));
         const uint64_t udp_token = j.value("udp_token", static_cast<uint64_t>(0));
@@ -1113,13 +1109,11 @@ void VoiceClient::on_text_message(const std::string& msg) {
         if (err.empty()) err = msg;
         std::string line = "[server/error] " + err;
         dbglog(line.c_str());
-        // "map session ended" = server kicked us due to char switch (auth_revoke).
-        // Set flag so try_send_auth waits for the new char_id to appear in memory
-        // before reconnecting — prevents a wasted round-trip where we re-auth as
-        // the old char and immediately get kicked again.
-        if (err == map_session_ended_text())
-            char_switch_pending_ = true;
-        else if (err == "session replaced by new login")
+        // "map session ended" (auth_revoke from a char switch / logoff) needs no
+        // special handling now: the WS closes, the DLL reconnects and re-auths, and
+        // the voice server holds the session pending until the map-server advisory
+        // confirms the char is back in-game (server-driven auth). No char_id wait.
+        if (err == "session replaced by new login")
             session_replaced_ = true;
         else if (err == "credentials mismatch" || err == "no active map session") {
             // Not validly in game right now: either the voice server's advisory
@@ -1600,6 +1594,7 @@ void VoiceClient::position_loop() {
                 state.char_id != last_auth_char_id &&
                 auth_sent_) {
                 dbglog("[auth] char changed — waiting for server kick to reconnect");
+                expecting_charswitch_kick_ = true;
                 auth_sent_      = false;
                 auth_confirmed_ = false;
             }
