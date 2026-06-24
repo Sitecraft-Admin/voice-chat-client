@@ -11,6 +11,19 @@
 #include "obf_string.hpp"
 #include "anti_tamper.hpp"
 #include "overlay.hpp"   // Overlay::get_render_avg_ms/max_ms for the periodic stat log
+#include "ringtone_wav.hpp"   // embedded incoming-call ringtone
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
+
+// Incoming-call ringtone — loops a WAV from memory until stopped. SND_ASYNC is
+// required for SND_LOOP; the embedded buffer is static so it stays valid.
+static void ringtone_start() {
+    PlaySoundW(reinterpret_cast<LPCWSTR>(g_ringtone_wav), nullptr,
+               SND_MEMORY | SND_LOOP | SND_ASYNC | SND_NODEFAULT);
+}
+static void ringtone_stop() {
+    PlaySoundW(nullptr, nullptr, 0);
+}
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -770,6 +783,7 @@ void VoiceClient::on_ws_closed() {
         dbglog("[ws] disconnected while in Room — restored pre-room channel");
     }
     if (cleared_whisper) {
+        ringtone_stop();   // connection dropped while a call was pending — stop ringing
         dbglog("[ws] disconnected during whisper — cleared local whisper state");
     }
     if (!running_) return;
@@ -1189,6 +1203,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         whisper_peer_id_   = static_cast<uint32_t>(j.value("from_char_id", 0));
         whisper_state_     = WhisperState::Incoming;
         whisper_tick_      = GetTickCount();
+        ringtone_start();   // 🔔 someone is calling — ring until answered/declined/timeout
         dbglog("[whisper] incoming from");
     }
     else if (type == "whisper_calling") {
@@ -1207,6 +1222,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         whisper_tick_        = GetTickCount();
         pre_whisper_channel_ = channel_;
         channel_             = Channel::Whisper;
+        ringtone_stop();    // answered → stop ringing
         dbglog("[whisper] active");
     }
     else if (type == "whisper_rejected") {
@@ -1214,6 +1230,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         whisper_state_ = WhisperState::None;
         whisper_sid_.clear();
         whisper_peer_name_.clear();
+        ringtone_stop();    // declined / cancelled → stop ringing
         dbglog("[whisper] rejected");
     }
     else if (type == "whisper_ended") {
@@ -1223,6 +1240,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         whisper_state_ = WhisperState::None;
         whisper_sid_.clear();
         whisper_peer_name_.clear();
+        ringtone_stop();    // call ended → stop ringing
         dbglog("[whisper] ended");
     }
     else if (type == "whisper_unavailable") {
@@ -1232,6 +1250,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
             whisper_sid_.clear();
             whisper_peer_name_.clear();
         }
+        ringtone_stop();
         set_whisper_notice("offline");
         dbglog("[whisper] target unavailable");
     }
@@ -1272,6 +1291,7 @@ void VoiceClient::whisper_accept() {
         if (whisper_state_ != WhisperState::Incoming || !ws_.is_connected()) return;
         sid = whisper_sid_;
     }
+    ringtone_stop();   // accepted — stop ringing immediately (don't wait for whisper_active)
     json msg;
     msg["type"] = "whisper_accept";
     msg["sid"]  = sid;
@@ -1288,6 +1308,7 @@ void VoiceClient::whisper_reject() {
         whisper_sid_.clear();
         whisper_peer_name_.clear();
     }
+    ringtone_stop();   // declined locally (state cleared here, no server reply) — stop ringing
     json msg;
     msg["type"] = "whisper_reject";
     msg["sid"]  = sid;
@@ -1545,10 +1566,12 @@ void VoiceClient::position_loop() {
             }
             if (whisper_state == WhisperState::Calling || whisper_state == WhisperState::Incoming) {
                 if (GetTickCount() - whisper_tick > 30000) {
-                    if (whisper_state == WhisperState::Incoming)
+                    if (whisper_state == WhisperState::Incoming) {
+                        ringtone_stop();   // unanswered 30s — stop ringing
                         whisper_reject();
-                    else
+                    } else {
                         whisper_end();
+                    }
                 }
             }
 
