@@ -138,7 +138,7 @@ static bool  g_ext_hi_fps = false;       // overlay has interactive/animating co
 // past the boundary and the pacing becomes steady. We add N nearly-invisible
 // full-screen fill passes (cheap: 4 verts each, just fill-rate). Tunable per
 // machine via config (overlay_pacing_fill); 0 disables it.
-static int g_pacing_fill_passes = 1;
+static int g_pacing_fill_passes = 0;   // default off (real stutter cause fixed in audio.cpp)
 static ImVec2  g_badge_hit_min = ImVec2(0.f, 0.f);
 static ImVec2  g_badge_hit_max = ImVec2(0.f, 0.f);
 static ImVec2  g_channel_hit_min = ImVec2(0.f, 0.f);

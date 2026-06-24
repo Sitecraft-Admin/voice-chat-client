@@ -468,10 +468,11 @@ void VoiceClient::save_settings(const char* path) {
     // Always emit the overlay-mode keys — with the current value, or the default
     // if the file didn't have them — so they're ALWAYS visible/editable in the
     // config (and survive this rewrite; they're read by dllmain at startup).
-    f << "// overlay_external: 1 = separate window (default; smoother, no cursor issues — single-client)\n"
-      << "//                   0 = draw in-game (OBS Game Capture; use for multi-box)\n"
-      << "overlay_external: "    << (has_ext  ? ext_val  : "1") << "\n"
-      << "overlay_pacing_fill: " << (has_pace ? pace_val : "1") << "\n";
+    f << "// overlay_external: 0 = draw in-game (default; OBS Game Capture, safe for multi-box)\n"
+      << "//                   1 = separate window (single-client only; OBS/2nd box won't work)\n"
+      << "overlay_external: "    << (has_ext  ? ext_val  : "0") << "\n"
+      << "// overlay_pacing_fill: 0 = off (default). Legacy frame-pacing workaround; not needed.\n"
+      << "overlay_pacing_fill: " << (has_pace ? pace_val : "0") << "\n";
     // NOTE: client_secret is intentionally NOT persisted — it is a shared
     // hard-coded secret baked into the DLL. Writing it to the user's
     // settings file means a stale/empty entry from an older build would

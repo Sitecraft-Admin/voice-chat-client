@@ -10,15 +10,16 @@
 #include <string>
 
 // Overlay mode (read once at startup, before the D3D9 hook installs):
-//   default            → external Discord-style window (off the game's render
-//                        pipeline: no FPS stutter / cursor conflicts). Auto falls
-//                        back to in-process under exclusive fullscreen.
-//   overlay_external: 0 → in-process overlay (draws inside the game; captured by
-//                        OBS Game Capture; required for multi-boxing — with 2+
-//                        clients the game's anti-cheat kills the 2nd external box)
+//   default            → in-process overlay (draws inside the game; captured by
+//                        OBS Game Capture; safe for multi-boxing). In-game frame
+//                        pacing is fine — the old "Pro Audio" thread stutter that
+//                        once pushed people to the external window is fixed.
+//   overlay_external: 1 → external Discord-style window (separate layered window;
+//                        single-client only — a 2nd box gets killed by anti-cheat,
+//                        and OBS Game Capture can't see it).
 static bool read_overlay_external() {
     std::ifstream f("voice_client.conf");
-    if (!f.is_open()) return true;             // default: external overlay
+    if (!f.is_open()) return false;            // default: in-process overlay
     std::string line;
     while (std::getline(f, line)) {
         auto cm = line.find("//");
@@ -33,16 +34,18 @@ static bool read_overlay_external() {
             s = (a == std::string::npos) ? "" : s.substr(a, b - a + 1);
         };
         trim(key); trim(val);
-        if (key == "overlay_external") return !(val == "0" || val == "false");
+        if (key == "overlay_external") return (val == "1" || val == "true");
     }
-    return true;                               // key absent → default external
+    return false;                              // key absent → default in-process
 }
 
-// Number of full-screen fill passes used to steady RO's frame pacing (fixes
-// map-scroll stutter). Default 1; raise it if a machine still stutters, 0 = off.
+// Full-screen fill passes that used to steady RO's frame pacing. The real cause
+// of the map-scroll stutter (audio threads on MMCSS "Pro Audio" preempting the
+// game) is fixed now, so this workaround defaults to 0 (off). Left configurable
+// via overlay_pacing_fill for any edge-case machine.
 static int read_pacing_fill() {
     std::ifstream f("voice_client.conf");
-    if (!f.is_open()) return 1;
+    if (!f.is_open()) return 0;
     std::string line;
     while (std::getline(f, line)) {
         auto cm = line.find("//");
@@ -58,10 +61,10 @@ static int read_pacing_fill() {
         };
         trim(key); trim(val);
         if (key == "overlay_pacing_fill") {
-            try { int n = std::stoi(val); return n < 0 ? 0 : n; } catch (...) { return 1; }
+            try { int n = std::stoi(val); return n < 0 ? 0 : n; } catch (...) { return 0; }
         }
     }
-    return 1;
+    return 0;
 }
 
 extern "C" __declspec(dllexport) void VoiceAttach() {}
