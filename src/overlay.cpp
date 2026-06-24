@@ -1196,6 +1196,13 @@ void draw_settings_window() {
         if (pretty_volume_slider("spk_voice", &spk_pct, 0.f, 100.f, ImVec2(content_w, 22.f)))
             vc.set_speaker_gain(spk_pct / 100.f);
 
+        ImGui::SetCursorPos(ImVec2(content_left, 311.f));
+        ImGui::TextColored(sub, L("\xe0\xb9\x80\xe0\xb8\xaa\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x87\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb5\xe0\xb8\xa2\xe0\xb8\x81\xe0\xb9\x80\xe0\xb8\x82\xe0\xb9\x89\xe0\xb8\xb2", "Ringtone", "Nada Dering", "Ringtone"));
+        ImGui::SetCursorPos(ImVec2(content_left, 330.f));
+        float ring_pct = vc.get_ringtone_volume() * 100.f;
+        if (pretty_volume_slider("ringtone_vol", &ring_pct, 0.f, 100.f, ImVec2(content_w, 22.f)))
+            vc.set_ringtone_volume(ring_pct / 100.f);
+
     } else if (g_settings_tab == 1) {
         ImGui::SetCursorPos(ImVec2(content_left, 64.f));
         ImGui::BeginChild("##players_tab_fixed", ImVec2(content_w, content_h), false, ImGuiWindowFlags_HorizontalScrollbar);

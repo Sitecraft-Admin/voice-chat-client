@@ -84,6 +84,11 @@ public:
     void  set_mic_gain(float v)     { capture_.gain.store(v); }
     void  set_speaker_gain(float v) { playback_.gain.store(v); }
 
+    // Incoming-call ringtone volume (0..1). PlaySound can't scale volume, so we
+    // play a volume-scaled copy of the embedded WAV. 0 = muted.
+    float get_ringtone_volume() const { return ringtone_volume_.load(); }
+    void  set_ringtone_volume(float v);
+
     // Device controls
     std::vector<AudioDeviceInfo> get_mic_devices()     { return enumerate_audio_devices(true); }
     std::vector<AudioDeviceInfo> get_speaker_devices() { return enumerate_audio_devices(false); }
@@ -278,4 +283,11 @@ private:
 
     std::string  whisper_notice_;
     DWORD        whisper_notice_tick_ = 0;
+
+    // Incoming-call ringtone (waveOut so volume is live-adjustable while looping)
+    std::atomic<float>   ringtone_volume_{ 1.0f };
+    std::atomic<bool>    ringtone_on_{ false };  // currently looping
+    std::mutex           ringtone_mtx_;          // guards the waveOut handle
+    void start_ringtone();   // loop the embedded WAV via waveOut at ringtone_volume_
+    void stop_ringtone();
 };

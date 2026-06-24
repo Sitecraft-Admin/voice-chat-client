@@ -15,14 +15,87 @@
 #include <mmsystem.h>
 #pragma comment(lib, "winmm.lib")
 
-// Incoming-call ringtone — loops a WAV from memory until stopped. SND_ASYNC is
-// required for SND_LOOP; the embedded buffer is static so it stays valid.
-static void ringtone_start() {
-    PlaySoundW(reinterpret_cast<LPCWSTR>(g_ringtone_wav), nullptr,
-               SND_MEMORY | SND_LOOP | SND_ASYNC | SND_NODEFAULT);
+// Incoming-call ringtone. Played via waveOut (not PlaySound) so the volume can be
+// changed LIVE with waveOutSetVolume while it loops — dragging the slider makes the
+// ring louder/softer instantly, no restart. The PCM points straight at the embedded
+// (static) WAV; the mutex guards the handle across the network + UI threads.
+static HWAVEOUT g_ring_hwo = nullptr;
+static WAVEHDR  g_ring_hdr = {};
+
+static DWORD ring_vol_dword(float v) {
+    if (v < 0.f) v = 0.f; if (v > 1.f) v = 1.f;
+    const WORD w = static_cast<WORD>(v * 0xFFFF);
+    return (static_cast<DWORD>(w)) | (static_cast<DWORD>(w) << 16);  // L | R
 }
-static void ringtone_stop() {
-    PlaySoundW(nullptr, nullptr, 0);
+
+void VoiceClient::start_ringtone() {
+    std::lock_guard<std::mutex> lk(ringtone_mtx_);
+    if (g_ring_hwo) return;   // already ringing
+
+    // Parse the embedded WAV: fmt -> WAVEFORMATEX, data -> PCM ptr/len (a LIST
+    // chunk sits between them, so scan the chunk list).
+    WAVEFORMATEX wfx{};
+    const unsigned char* pcm = nullptr;
+    DWORD pcm_len = 0;
+    size_t off = 12;   // skip "RIFF"<size>"WAVE"
+    while (off + 8 <= g_ringtone_wav_len) {
+        const unsigned char* p = g_ringtone_wav + off;
+        const uint32_t csz = p[4] | (p[5] << 8) | (p[6] << 16) | (uint32_t(p[7]) << 24);
+        if (p[0]=='f'&&p[1]=='m'&&p[2]=='t'&&p[3]==' ') {
+            wfx.wFormatTag      = (WORD)(p[8]  | (p[9]  << 8));
+            wfx.nChannels       = (WORD)(p[10] | (p[11] << 8));
+            wfx.nSamplesPerSec  = p[12] | (p[13]<<8) | (p[14]<<16) | (uint32_t(p[15])<<24);
+            wfx.nAvgBytesPerSec = p[16] | (p[17]<<8) | (p[18]<<16) | (uint32_t(p[19])<<24);
+            wfx.nBlockAlign     = (WORD)(p[20] | (p[21] << 8));
+            wfx.wBitsPerSample  = (WORD)(p[22] | (p[23] << 8));
+        } else if (p[0]=='d'&&p[1]=='a'&&p[2]=='t'&&p[3]=='a') {
+            pcm = p + 8;
+            pcm_len = csz;
+            if (off + 8 + (size_t)pcm_len > g_ringtone_wav_len)
+                pcm_len = (DWORD)(g_ringtone_wav_len - off - 8);
+            break;
+        }
+        off += 8 + csz + (csz & 1);   // chunks are word-aligned
+    }
+    if (!pcm || pcm_len == 0 || wfx.nChannels == 0) return;
+    wfx.cbSize = 0;
+
+    if (waveOutOpen(&g_ring_hwo, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) {
+        g_ring_hwo = nullptr;
+        return;
+    }
+    waveOutSetVolume(g_ring_hwo, ring_vol_dword(ringtone_volume_.load()));
+
+    g_ring_hdr = {};
+    g_ring_hdr.lpData         = (LPSTR)pcm;          // static embedded buffer — valid forever
+    g_ring_hdr.dwBufferLength = pcm_len;
+    g_ring_hdr.dwLoops        = 0xFFFFFFFF;          // effectively infinite loop
+    g_ring_hdr.dwFlags        = WHDR_BEGINLOOP | WHDR_ENDLOOP;
+    waveOutPrepareHeader(g_ring_hwo, &g_ring_hdr, sizeof(g_ring_hdr));
+    waveOutWrite(g_ring_hwo, &g_ring_hdr, sizeof(g_ring_hdr));
+    ringtone_on_.store(true);
+}
+
+void VoiceClient::stop_ringtone() {
+    std::lock_guard<std::mutex> lk(ringtone_mtx_);
+    ringtone_on_.store(false);
+    if (g_ring_hwo) {
+        waveOutReset(g_ring_hwo);
+        waveOutUnprepareHeader(g_ring_hwo, &g_ring_hdr, sizeof(g_ring_hdr));
+        waveOutClose(g_ring_hwo);
+        g_ring_hwo = nullptr;
+    }
+}
+
+void VoiceClient::set_ringtone_volume(float v) {
+    if (v < 0.f) v = 0.f;
+    if (v > 1.f) v = 1.f;
+    ringtone_volume_.store(v);
+    // LIVE volume — waveOutSetVolume changes a playing stream without restarting,
+    // so the ring follows the slider (0 = silent, no replay-from-start).
+    std::lock_guard<std::mutex> lk(ringtone_mtx_);
+    if (g_ring_hwo)
+        waveOutSetVolume(g_ring_hwo, ring_vol_dword(v));
 }
 
 #pragma comment(lib, "ws2_32.lib")
@@ -391,6 +464,7 @@ void VoiceClient::load_settings(const char* path) {
             }
             else if (key == "mic_gain")      capture_.gain.store(std::stof(val));
             else if (key == "speaker_gain")  playback_.gain.store(std::stof(val));
+            else if (key == "ringtone_volume") ringtone_volume_.store(std::stof(val));
             else if (key == "mic_device"  && !val.empty()) capture_.set_device(utf8_to_wstr(val));
             else if (key == "speaker_device" && !val.empty()) playback_.set_device(utf8_to_wstr(val));
             else if (key == "noise_suppression") noise_suppressor_.set_enabled(val == "1");
@@ -470,6 +544,7 @@ void VoiceClient::save_settings(const char* path) {
       << "channel: "        << static_cast<int>(channel)            << "\n"
       << "mic_gain: "       << capture_.gain.load()                 << "\n"
       << "speaker_gain: "   << playback_.gain.load()                << "\n"
+      << "ringtone_volume: " << ringtone_volume_.load()             << "\n"
       << "mic_device: "     << wstr_to_utf8(capture_.get_device())   << "\n"
       << "speaker_device: "      << wstr_to_utf8(playback_.get_device())         << "\n"
       << "noise_suppression: "   << (noise_suppressor_.is_enabled()  ? 1 : 0) << "\n"
@@ -783,7 +858,7 @@ void VoiceClient::on_ws_closed() {
         dbglog("[ws] disconnected while in Room — restored pre-room channel");
     }
     if (cleared_whisper) {
-        ringtone_stop();   // connection dropped while a call was pending — stop ringing
+        stop_ringtone();   // connection dropped while a call was pending — stop ringing
         dbglog("[ws] disconnected during whisper — cleared local whisper state");
     }
     if (!running_) return;
@@ -1203,7 +1278,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         whisper_peer_id_   = static_cast<uint32_t>(j.value("from_char_id", 0));
         whisper_state_     = WhisperState::Incoming;
         whisper_tick_      = GetTickCount();
-        ringtone_start();   // 🔔 someone is calling — ring until answered/declined/timeout
+        start_ringtone();   // 🔔 someone is calling — ring until answered/declined/timeout
         dbglog("[whisper] incoming from");
     }
     else if (type == "whisper_calling") {
@@ -1222,7 +1297,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         whisper_tick_        = GetTickCount();
         pre_whisper_channel_ = channel_;
         channel_             = Channel::Whisper;
-        ringtone_stop();    // answered → stop ringing
+        stop_ringtone();    // answered → stop ringing
         dbglog("[whisper] active");
     }
     else if (type == "whisper_rejected") {
@@ -1230,7 +1305,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         whisper_state_ = WhisperState::None;
         whisper_sid_.clear();
         whisper_peer_name_.clear();
-        ringtone_stop();    // declined / cancelled → stop ringing
+        stop_ringtone();    // declined / cancelled → stop ringing
         dbglog("[whisper] rejected");
     }
     else if (type == "whisper_ended") {
@@ -1240,7 +1315,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
         whisper_state_ = WhisperState::None;
         whisper_sid_.clear();
         whisper_peer_name_.clear();
-        ringtone_stop();    // call ended → stop ringing
+        stop_ringtone();    // call ended → stop ringing
         dbglog("[whisper] ended");
     }
     else if (type == "whisper_unavailable") {
@@ -1250,7 +1325,7 @@ void VoiceClient::on_text_message(const std::string& msg) {
             whisper_sid_.clear();
             whisper_peer_name_.clear();
         }
-        ringtone_stop();
+        stop_ringtone();
         set_whisper_notice("offline");
         dbglog("[whisper] target unavailable");
     }
@@ -1291,7 +1366,7 @@ void VoiceClient::whisper_accept() {
         if (whisper_state_ != WhisperState::Incoming || !ws_.is_connected()) return;
         sid = whisper_sid_;
     }
-    ringtone_stop();   // accepted — stop ringing immediately (don't wait for whisper_active)
+    stop_ringtone();   // accepted — stop ringing immediately (don't wait for whisper_active)
     json msg;
     msg["type"] = "whisper_accept";
     msg["sid"]  = sid;
@@ -1308,7 +1383,7 @@ void VoiceClient::whisper_reject() {
         whisper_sid_.clear();
         whisper_peer_name_.clear();
     }
-    ringtone_stop();   // declined locally (state cleared here, no server reply) — stop ringing
+    stop_ringtone();   // declined locally (state cleared here, no server reply) — stop ringing
     json msg;
     msg["type"] = "whisper_reject";
     msg["sid"]  = sid;
@@ -1567,7 +1642,7 @@ void VoiceClient::position_loop() {
             if (whisper_state == WhisperState::Calling || whisper_state == WhisperState::Incoming) {
                 if (GetTickCount() - whisper_tick > 30000) {
                     if (whisper_state == WhisperState::Incoming) {
-                        ringtone_stop();   // unanswered 30s — stop ringing
+                        stop_ringtone();   // unanswered 30s — stop ringing
                         whisper_reject();
                     } else {
                         whisper_end();
