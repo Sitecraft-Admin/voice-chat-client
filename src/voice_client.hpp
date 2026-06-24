@@ -182,14 +182,6 @@ private:
                                                        // connection (char switch) and expect the server
                                                        // to kick us for a clean reconnect — that close is
                                                        // benign, not a credentials rejection
-    std::atomic<uint32_t> last_sent_login_id1_{ 0 };   // login_id1 sent on the last auth attempt
-    std::atomic<uint32_t> rejected_login_id1_{ 0 };    // login_id1 the server rejected as "credentials
-                                                       // mismatch" → don't re-auth with this exact value
-                                                       // (a newer login on this account took over); stay
-                                                       // quiet until memory login_id1 changes (relog)
-    std::atomic<int>     auth_reject_streak_{ 0 };     // consecutive "sent auth but closed before auth_ok"
-                                                       // — infers an auth-gate rejection even when the
-                                                       // server's error text is lost to the close race
     std::atomic<bool>    voice_banned_{ false };       // GM banned — mic shown as off
     std::atomic<bool>    no_license_{ false };         // server requires license and we don't have one
     std::atomic<bool>    flood_banned_{ false };       // audio flood ban — backoff reconnect until expiry

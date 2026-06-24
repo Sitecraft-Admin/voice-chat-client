@@ -631,9 +631,6 @@ void VoiceClient::init() {
     flood_banned_         = false;
     flood_ban_until_tick_ = 0;
     reconnect_backoff_until_ = 0;
-    last_sent_login_id1_  = 0;
-    rejected_login_id1_   = 0;
-    auth_reject_streak_   = 0;
     expecting_charswitch_kick_ = false;
     server_off_map_       = false;
     if (g_voice_session_id == 0) g_voice_session_id = make_session_id();
@@ -734,18 +731,9 @@ void VoiceClient::on_ws_closed() {
     g_udp_voice.stop();
 
     const bool charswitch_kick = expecting_charswitch_kick_.exchange(false);
-    if (charswitch_kick) {
-        auth_reject_streak_.store(0);
-    } else if (auth_was_rejected) {
-        const uint32_t l1 = last_sent_login_id1_.load();
-        if (auth_reject_streak_.fetch_add(1) + 1 >= 2 && l1 != 0) {
-            rejected_login_id1_.store(l1);
-            dbglog("[ws] auth rejected repeatedly — pinning login_id1, quiet until relog");
-        }
+    if (!charswitch_kick && auth_was_rejected) {
         if ((int32_t)(reconnect_backoff_until_.load() - GetTickCount()) <= 0)
-            reconnect_backoff_until_.store(GetTickCount() + 15000);
-    } else {
-        auth_reject_streak_.store(0);
+            reconnect_backoff_until_.store(GetTickCount() + 8000);
     }
     // NOTE: do NOT touch pcm_accum_ here — this function now runs on both
     // the network recv thread (server-drop path) AND the position thread (char
@@ -855,6 +843,10 @@ void VoiceClient::reconnect_loop() {
 }
 
 void VoiceClient::connect_to_server() {
+    while (running_.load() && !MemoryReader::read().auth_ready)
+        Sleep(200);
+    if (!running_.load()) return;
+
     ws_.on_text   = [this](const std::string& m){ on_text_message(m); };
     ws_.on_binary = [this](const std::vector<uint8_t>& d){ on_binary_message(d); };
     ws_.on_close  = [this](){ on_ws_closed(); };
@@ -902,11 +894,6 @@ void VoiceClient::try_send_auth() {
         return;
     }
 
-    if (st.login_id1 != 0 && st.login_id1 == rejected_login_id1_.load()) {
-        return;
-    }
-    rejected_login_id1_.store(0);
-
     json auth;
     auth["type"]       = "auth";
     auth["account_id"] = st.account_id;
@@ -921,7 +908,6 @@ void VoiceClient::try_send_auth() {
     if (ws_.send_text(auth.dump())) {
         auth_sent_ = true;
         last_auth_char_id_.store(st.char_id);   // so position_loop won't see this as a char-switch
-        last_sent_login_id1_.store(st.login_id1); // remember for "credentials mismatch" gating
         char b[256];
         sprintf_s(b, "[auth] sent acc=%d char=%d",
             st.account_id, st.char_id);
@@ -946,8 +932,6 @@ void VoiceClient::on_text_message(const std::string& msg) {
         voice_banned_.store(false);
         no_license_.store(false);
         reconnect_backoff_until_.store(0); // auth succeeded — clear any conflict backoff
-        rejected_login_id1_.store(0);
-        auth_reject_streak_.store(0);
         expecting_charswitch_kick_.store(false);
         server_off_map_.store(false);   // confirmed in-game again → show the bar
         dbglog("[auth] auth_ok");
@@ -1126,15 +1110,12 @@ void VoiceClient::on_text_message(const std::string& msg) {
             // says a different account_id/login_id1 owns this char_id ("credentials
             // mismatch" — another login took the account, or a spoof), or the
             // map server has no advisory for us yet ("no active map session").
-            // Back off before reconnecting so we don't tight-loop / ping-pong
-            // with another machine on this account. These are the exact strings
-            // the voice server sends (server.cpp) — keep them in sync.
-            reconnect_backoff_until_ = GetTickCount() + 15000;
-            dbglog("[ws] account/advisory conflict — backing off 15s before reconnect");
-            if (err == "credentials mismatch") {
-                const uint32_t sent = last_sent_login_id1_.load();
-                if (sent != 0) rejected_login_id1_.store(sent);
-            }
+            // Back off before reconnecting so we don't tight-loop / ping-pong,
+            // then RETRY — we never permanently give up, so a real session always
+            // recovers once its login_id1 matches the advisory. These are the exact
+            // strings the voice server sends (server.cpp) — keep them in sync.
+            reconnect_backoff_until_ = GetTickCount() + 8000;
+            dbglog("[ws] account/advisory conflict — backing off 8s before reconnect");
         }
         else if (err == "session contested") {
             // The voice server's flap dampener is keeping another live client
